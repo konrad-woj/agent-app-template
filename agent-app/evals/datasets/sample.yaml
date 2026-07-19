@@ -1,0 +1,279 @@
+# Pre-sales proposal dataset — 5 synthetic prospect profiles
+#
+# KNOWN DOMAIN MISMATCH (found while implementing PLAN.md Phase 5d, not fixed
+# here — this is a dataset-content rewrite, not a harness change): agent-app's
+# actual implemented agent (see README.md) is a general research assistant
+# that answers factual questions (e.g. "What caused the 2008 financial
+# crisis?") and produces a plan → researched answer, NOT a pre-sales technical
+# proposal generator. The five items below (RetailEdge, ClearPay Financial,
+# etc.) describe prospect pain points and expect a *sales proposal* — an
+# earlier design direction that predates the research-assistant framing this
+# repo actually shipped. Running these through the real graph still exercises
+# every node correctly (planner/react_researcher/writer don't care what the
+# question is about), but the `quality_criteria` scores below (stack alignment,
+# pain point coverage) are checking for proposal-writing behavior the agent was
+# never built to produce, so quality_score results on this dataset should be
+# read with that caveat until it's replaced with real research questions.
+#
+# Each entry represents one evaluation case. The agent receives `input` and
+# must produce a technical proposal that satisfies all `expected_output` checks.
+#
+# Fields:
+#   input.messages        — conversation turns sent to POST /v1/chat
+#   input.approve_plan    — whether the simulated human approves the research plan
+#                           (set to false in a separate negative-path test case)
+#   expected_output       — properties the final proposal must satisfy
+#     must_address        — pain point IDs that must each be explicitly discussed
+#     must_reference      — stack items that must appear (case-insensitive substring match)
+#     must_include_terms  — domain terms signalling a non-generic proposal
+#     must_not_contain    — strings that would indicate a templated / off-topic response
+#     scoring_hints       — free-text guidance for the LLM-based eval judge
+
+dataset_name: sample
+items:
+  - id: prospect_001
+    name: RetailEdge
+    description: >
+      Mid-size e-commerce platform (50 M annual orders, ~120 engineers).
+      Python/Django monolith migrating to microservices. Wants to add ML-based
+      product recommendations without a full platform rewrite.
+    input:
+      messages:
+        - role: user
+          content: >
+            We are RetailEdge, an e-commerce platform built on Django and PostgreSQL
+            (AWS RDS). Our Redis cache sits in front of the product catalogue.
+            We have two pain points we need help with:
+            (1) Our recommendations are hardcoded bestseller lists — no personalisation.
+                New products get zero traffic for weeks (cold-start problem).
+            (2) Our search relevance is poor: exact-match only, no semantic understanding.
+            We have a small data team (3 people) and cannot afford a full ML platform.
+            Please produce a technical proposal.
+      approve_plan: true
+    expected_output:
+      must_address:
+        - id: pp1
+          description: Personalisation / recommendation cold-start
+        - id: pp2
+          description: Semantic search relevance
+      must_reference:
+        - Django
+        - PostgreSQL
+        - Redis
+      must_include_terms:
+        - embeddings
+        - vector
+        - cold start
+      must_not_contain:
+        - "contact our sales team"
+        - "please provide more details"
+        - "I cannot help with"
+      scoring_hints:
+        - Proposal should suggest a vector store compatible with the existing AWS stack
+          (e.g. pgvector, OpenSearch) rather than requiring a new managed service.
+        - Cold-start mitigation should be content-based (item metadata embeddings),
+          not solely collaborative filtering which requires interaction history.
+        - Search improvement should propose a hybrid BM25 + dense retrieval approach,
+          not a rewrite of the search backend.
+        - Must acknowledge the 3-person data team constraint and prefer managed or
+          low-ops solutions.
+
+  - id: prospect_002
+    name: ClearPay Financial
+    description: >
+      FinTech startup (Series B, ~40 engineers). Node.js microservices on GCP,
+      PostgreSQL + BigQuery. Manual fraud review team of 8 analysts spending
+      4 hours/day on false positives.
+    input:
+      messages:
+        - role: user
+          content: >
+            We are ClearPay, a payment processor running Node.js microservices on GCP
+            with PostgreSQL for transactional data and BigQuery for analytics.
+            Our fraud detection is purely rule-based (velocity checks, blocklists).
+            Two critical pain points:
+            (1) False positive rate is 18% — analysts spend 4 hours/day manually
+                reviewing legitimate transactions that got flagged.
+            (2) We have no anomaly detection for novel fraud patterns; we only catch
+                known patterns after someone writes a new rule.
+            We process 2 M transactions/day. Latency SLA is <200 ms per transaction.
+            Please produce a technical proposal.
+      approve_plan: true
+    expected_output:
+      must_address:
+        - id: pp1
+          description: High false positive rate in fraud detection
+        - id: pp2
+          description: No detection of novel / unseen fraud patterns
+      must_reference:
+        - Node.js
+        - BigQuery
+        - GCP
+      must_include_terms:
+        - anomaly detection
+        - false positive
+        - latency
+      must_not_contain:
+        - "contact our sales team"
+        - "I cannot help with"
+      scoring_hints:
+        - Proposal must respect the <200 ms latency SLA; batch-only solutions are
+          insufficient for the real-time scoring path.
+        - Should propose a two-layer approach - a fast rule + ML model for online
+          scoring and a slower anomaly/unsupervised model for pattern discovery.
+        - BigQuery should be leveraged for feature engineering / model training,
+          not ignored.
+        - Should address the analyst workflow (e.g. review queue prioritisation)
+          not just the model accuracy.
+
+  - id: prospect_003
+    name: MedNotes Health
+    description: >
+      Healthcare SaaS (~60 engineers). React frontend, Java Spring Boot backend,
+      MongoDB. Processes 500 K clinical notes/month. HIPAA-covered entity.
+    input:
+      messages:
+        - role: user
+          content: >
+            We are MedNotes, a clinical documentation platform. Our stack is
+            React + Java Spring Boot + MongoDB, hosted on AWS (us-east-1).
+            We are a HIPAA-covered entity — all data is PHI.
+            Pain points:
+            (1) Clinicians spend 20 minutes per visit on structured data entry.
+                We want to auto-extract ICD-10 codes, medications, and allergies
+                from free-text notes.
+            (2) Our search over historical notes is keyword-only; clinicians cannot
+                ask natural-language questions like "show me diabetic patients on
+                metformin with an A1C above 8".
+            We cannot send PHI to third-party APIs (GDPR + HIPAA).
+            Please produce a technical proposal.
+      approve_plan: true
+    expected_output:
+      must_address:
+        - id: pp1
+          description: Automated extraction of structured data from clinical notes
+        - id: pp2
+          description: Natural-language search over historical notes
+      must_reference:
+        - Spring Boot
+        - MongoDB
+        - AWS
+      must_include_terms:
+        - ICD-10
+        - NER
+        - HIPAA
+        - on-premise
+      must_not_contain:
+        - "send data to OpenAI"
+        - "use the OpenAI API"
+        - "contact our sales team"
+      scoring_hints:
+        - HIPAA constraint is non-negotiable — proposal must explicitly recommend
+          self-hosted or AWS-native models (e.g. AWS Comprehend Medical, on-prem
+          Llama), not third-party hosted APIs.
+        - NER/extraction should name a specific model or library (spaCy, medspaCy,
+          AWS Comprehend Medical) not just say "use an NLP model".
+        - Natural-language query should mention RAG or a hybrid search approach
+          over the MongoDB collection.
+        - Must acknowledge the PHI constraint in every proposed integration step.
+
+  - id: prospect_004
+    name: FleetRoute Logistics
+    description: >
+      Regional logistics company (~200 drivers, ~25 engineers). Legacy PHP + MySQL
+      monolith, no real-time telemetry. Manual dispatch via spreadsheets.
+    input:
+      messages:
+        - role: user
+          content: >
+            We are FleetRoute, a regional last-mile delivery company.
+            Our tech stack is a PHP 7 monolith backed by MySQL 5.7.
+            We have no real-time vehicle telemetry beyond driver phone check-ins.
+            Pain points:
+            (1) Route planning is manual — dispatchers use spreadsheets and gut feel.
+                We deliver to ~300 stops/day across 40 trucks; optimisation could
+                save an estimated 15% in fuel.
+            (2) We have no ETA predictions for customers; the only notification is
+                a manual call from the driver.
+            We have a 25-person engineering team and cannot afford to rebuild
+            the monolith. Budget is limited.
+      approve_plan: true
+    expected_output:
+      must_address:
+        - id: pp1
+          description: Manual route planning / optimisation
+        - id: pp2
+          description: No real-time ETA or customer notification
+      must_reference:
+        - PHP
+        - MySQL
+      must_include_terms:
+        - route optimisation
+        - VRP
+        - ETA
+        - webhook
+      must_not_contain:
+        - "rewrite your monolith"
+        - "migrate to microservices"
+        - "contact our sales team"
+      scoring_hints:
+        - Budget / team size constraint means proposal should favour API-first
+          additions (e.g. OR-Tools or a routing API) that wrap the existing monolith
+          rather than greenfield rewrites.
+        - VRP (vehicle routing problem) should be named explicitly; generic
+          "optimisation" is too vague.
+        - ETA prediction can be simple (historical delivery time + live traffic API)
+          — proposal should not over-engineer with custom ML when a simpler heuristic
+          would suffice for the stated scale.
+        - Real-time telemetry gap should be addressed (e.g. lightweight driver app
+          posting GPS pings) before ETA is feasible.
+
+  - id: prospect_005
+    name: PulseCast Media
+    description: >
+      Digital media company (~80 engineers). Python + Elasticsearch + PostgreSQL,
+      AWS. 2 M registered users, 10 M monthly article views. Low content engagement
+      and high churn on the free tier.
+    input:
+      messages:
+        - role: user
+          content: >
+            We are PulseCast, a digital media platform. Our stack is Python
+            (Flask + Celery), Elasticsearch 7, and PostgreSQL, all on AWS.
+            We have 2 M registered users and serve ~10 M article views/month.
+            Pain points:
+            (1) Content discovery is chronological or category-based only.
+                Users cannot find niche content they would love; engagement (CTR
+                on recommended articles) is 2%, well below industry average of 8%.
+            (2) We cannot identify at-risk users before they churn; we only know
+                they churned after 30 days of inactivity.
+            Our data team is strong (6 engineers) but focused on ad analytics.
+      approve_plan: true
+    expected_output:
+      must_address:
+        - id: pp1
+          description: Low content recommendation engagement / poor discovery
+        - id: pp2
+          description: No churn prediction or early-warning system
+      must_reference:
+        - Elasticsearch
+        - PostgreSQL
+        - Python
+      must_include_terms:
+        - collaborative filtering
+        - churn
+        - engagement
+        - feature store
+      must_not_contain:
+        - "contact our sales team"
+        - "I cannot help with"
+      scoring_hints:
+        - Elasticsearch already supports dense vector search (kNN) — proposal should
+          leverage this rather than recommending a separate vector DB.
+        - Churn prediction model should be described at the feature level
+          (recency, frequency, session depth) not just named as a black box.
+        - Recommendation improvement path should be incremental - start with
+          content-based filtering (no cold start issue), layer in collaborative
+          filtering once interaction data is sufficient.
+        - Should acknowledge the ad-analytics data team as an asset and propose
+          reusing their feature pipelines.

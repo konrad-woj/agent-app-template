@@ -1,0 +1,354 @@
+# Scoring rubric — see evals/datasets/sample.yaml for a note on this file's
+# "pre-sales proposal" framing vs. the actually-implemented research-assistant agent.
+#
+# TWO evaluation layers:
+#
+#   quality_criteria   — LLM-judge scores, consumed by evals/evaluators.py's
+#                        quality_score_evaluator (PROVISIONAL freeform-JSON judge,
+#                        pre-Phase-5b — see evals/evaluators.py:run_quality_judge).
+#                        NOT currently read by the Reflection critic subgraph
+#                        (app/graph/nodes/subgraphs/reflection.py) — that node has
+#                        its own simple pass/fail + one-sentence critique prompt,
+#                        unrelated to this file (checked directly against the
+#                        implementation, not assumed).
+#                        Each criterion returns a 0–max_score integer + a one-line
+#                        reason string.  Proposal passes when total >= pass_threshold
+#                        AND every per-criterion minimum is met.
+#
+#   trace_assertions   — Deterministic checks on the graph execution trace
+#                        (checkpoint history + final state).  These never call an
+#                        LLM.  Failures indicate a wiring or logic bug, not a
+#                        quality problem.  Organised per-node so each node can be
+#                        tested in isolation with a fake upstream state.
+#
+# Both layers are consumed by evals/run_experiment.py and by the unit tests in
+# tests/evals/test_evaluators.py and tests/evals/test_trace_assertions.py.
+
+# ---------------------------------------------------------------------------
+# Layer 1 — LLM quality criteria
+# ---------------------------------------------------------------------------
+
+quality_criteria:
+
+  - id: stack_alignment
+    name: Stack Alignment
+    description: >
+      The proposal references and integrates with the prospect's stated tech stack.
+      Proposed additions are compatible with existing components; no incompatible
+      technology is introduced without a migration path.
+    max_score: 3
+    scoring_guide:
+      0: No mention of the prospect's stack; reads like a generic template.
+      1: Mentions at least one stack component but proposes incompatible additions.
+      2: References most stack components; additions are compatible.
+      3: Deep integration specified for each layer; migration or adoption path given.
+    per_criterion_minimum: 2
+
+  - id: pain_point_coverage
+    name: Pain Point Coverage
+    description: >
+      Every pain point listed by the prospect is explicitly addressed with a
+      concrete technical response.  Vague acknowledgement ("we can help with X")
+      does not count — the proposal must explain HOW.
+    max_score: 3
+    scoring_guide:
+      0: No pain points addressed.
+      1: At least one pain point addressed; others ignored.
+      2: All pain points addressed but one or more only at a surface level.
+      3: All pain points addressed with specific technical mechanisms.
+    per_criterion_minimum: 2
+
+  - id: specificity
+    name: Technical Specificity
+    description: >
+      The proposal names specific technologies, libraries, APIs, or patterns
+      (e.g. "pgvector for ANN search", "OR-Tools for VRP") rather than generic
+      phrases ("use a machine learning model", "add an API layer").
+    max_score: 3
+    scoring_guide:
+      0: Entirely generic; could apply to any company in any industry.
+      1: One or two named technologies but rest is vague.
+      2: Most recommendations are specific; a few remain generic.
+      3: Every recommendation is specific and justified.
+    per_criterion_minimum: 2
+
+  - id: feasibility
+    name: Feasibility
+    description: >
+      The proposal is realistic given the prospect's stated team size, budget
+      signals, and existing architecture.  Over-engineered solutions that require
+      a full rewrite or large new teams score low.
+    max_score: 2
+    scoring_guide:
+      0: Requires resources clearly beyond the prospect's constraints.
+      1: Feasible in principle but ignores one or more stated constraints.
+      2: Explicitly scoped to the prospect's constraints; incremental path shown.
+    per_criterion_minimum: 1
+
+  - id: risk_acknowledgment
+    name: Risk and Trade-off Acknowledgment
+    description: >
+      The proposal identifies at least one risk, limitation, or trade-off for
+      the recommended approach and states how to mitigate or monitor it.
+    max_score: 2
+    scoring_guide:
+      0: No risks or trade-offs mentioned.
+      1: At least one risk mentioned but no mitigation given.
+      2: Key risks identified with concrete mitigations or monitoring strategies.
+    per_criterion_minimum: 1
+
+pass_policy:
+  # Proposal accepted when total score AND all per-criterion minimums are met.
+  minimum_total: 10          # out of 13 maximum
+  # Per-criterion minimums are declared inline above (per_criterion_minimum field).
+
+  # Used by evals/evaluators.py:run_quality_judge (see note above — not the
+  # Reflection subgraph, which uses its own unrelated pass/fail prompt).
+  # The judge LLM must output a JSON object matching this schema:
+  #   { "scores": { "<criterion_id>": { "score": int, "reason": str }, … },
+  #     "total": int,
+  #     "passed": bool,
+  #     "summary": str }
+
+# ---------------------------------------------------------------------------
+# Layer 2 — Deterministic trace assertions
+# ---------------------------------------------------------------------------
+#
+# Each assertion is evaluated against the LangGraph checkpoint history and/or
+# final AgentState without calling an LLM.
+#
+# CORRECTED as part of Phase 5d (see PLAN.md): this section originally
+# referenced a "search_subgraph" / "searcher" fan-out and a "search_results"
+# state field that never shipped — the actual graph (app/graph/workflow.py)
+# replaced that early design with a single-node ReAct loop (react_researcher)
+# and has no such field in AgentState (app/graph/state.py). Node names and
+# state fields below now match the real graph. `resume_guard` was also added
+# to the flow between `planner` and `react_researcher` and is included in
+# ta_flow_all_nodes_executed accordingly.
+#
+# Fields:
+#   id           — unique assertion ID (used in test reports)
+#   node         — which node this assertion targets ("flow" = end-to-end)
+#   description  — human-readable explanation
+#   check        — what to inspect:
+#                    state_field   — read a key from the final AgentState
+#                    checkpoint    — inspect the checkpoint history list
+#                    messages      — inspect the messages list in the final AgentState
+#   condition    — the assertion predicate (see evals/trace_assertions.py for evaluation)
+#   expected     — expected value (for equality / membership checks)
+#   negative_case — if true, this assertion only applies to negative-path runs
+#                   (e.g. approve_plan: false, or an off-topic/harmful-output probe).
+#                   evals/datasets/sample.yaml has no negative-case items today —
+#                   adversarial probes are the Phase 5c guardrail_redteam suite's job.
+#                   evals/trace_assertions.py evaluates negative_case assertions only
+#                   when explicitly asked to (include_negative_cases=True).
+
+trace_assertions:
+
+  # --- input_guard ---
+
+  - id: ta_input_guard_blocks_off_topic
+    node: input_guard
+    description: >
+      When the user message is off-topic (not a research question),
+      input_guard must set status="blocked" and guard_reason must be non-empty.
+    check: state_field
+    fields: [status, guard_reason]
+    condition: equals
+    expected:
+      status: blocked
+      guard_reason: non_empty
+    negative_case: true   # only tested on the off-topic probe case
+
+  - id: ta_input_guard_passes_valid
+    node: input_guard
+    description: >
+      When the user message is a valid research query, input_guard must NOT
+      set status="blocked"; the graph must continue to planner.
+    check: checkpoint
+    condition: node_executed
+    expected: planner
+
+  # --- planner ---
+
+  - id: ta_planner_emits_interrupt
+    node: planner
+    description: >
+      On the first invocation, the planner must pause the graph (interrupt).
+      Some checkpoint's next must be exactly ("planner",) — the graph suspended
+      awaiting human approval.
+    check: checkpoint
+    condition: graph_interrupted_at
+    expected: planner
+
+  - id: ta_planner_plan_non_empty
+    node: planner
+    description: >
+      After the planner runs, the "plan" state field must be a non-empty list.
+    check: state_field
+    fields: [plan]
+    condition: non_empty_list
+
+  - id: ta_planner_aborts_on_reject
+    node: planner
+    description: >
+      When the human resumes with approve=false, status must be set to "aborted"
+      and the graph must not proceed to resume_guard / react_researcher.
+    check: state_field
+    fields: [status]
+    condition: equals
+    expected:
+      status: aborted
+    negative_case: true
+
+  # --- resume_guard ---
+
+  - id: ta_resume_guard_passes_valid
+    node: resume_guard
+    description: >
+      On the happy path (approve=true, clean resume message), the graph must
+      continue past resume_guard to react_researcher.
+    check: checkpoint
+    condition: node_executed
+    expected: react_researcher
+
+  # --- react_researcher (ReAct) ---
+
+  - id: ta_react_calls_at_least_one_tool
+    node: react_researcher
+    description: >
+      The react_researcher must call at least one MCP tool before exiting.
+      Verified by checking that react_steps >= 1 in final state.
+    check: state_field
+    fields: [react_steps]
+    condition: gte
+    expected: 1
+
+  - id: ta_react_tool_messages_present
+    node: react_researcher
+    description: >
+      At least one ToolMessage must appear in the messages list after
+      react_researcher completes, confirming a tool was actually invoked.
+    check: messages
+    condition: contains_message_type
+    expected: tool
+
+  - id: ta_react_exits_without_tool_calls
+    node: react_researcher
+    description: >
+      The final message produced by react_researcher must have no tool_calls,
+      confirming the loop exited cleanly via tools_condition.
+    check: messages
+    condition: last_ai_message_has_no_tool_calls
+
+  # --- writer ---
+
+  - id: ta_writer_produces_draft
+    node: writer
+    description: >
+      After writer runs, draft_answer must be a non-empty string of at least
+      100 characters (rules out placeholder outputs).
+    check: state_field
+    fields: [draft_answer]
+    condition: min_length
+    expected: 100
+
+  - id: ta_writer_status_set
+    node: writer
+    description: After writer runs, status must be "writing" or "reflecting".
+    check: state_field
+    fields: [status]
+    condition: one_of
+    expected: [writing, reflecting]
+
+  # --- reflection_subgraph ---
+
+  - id: ta_reflection_ran_at_least_once
+    node: reflection_subgraph
+    description: >
+      reflection_attempts must be >= 1 in the final state, confirming the
+      critic executed at least one evaluation pass.
+    check: state_field
+    fields: [reflection_attempts]
+    condition: gte
+    expected: 1
+
+  - id: ta_reflection_final_answer_set
+    node: reflection_subgraph
+    description: >
+      After reflection_subgraph completes with passed=true, final_answer must
+      be non-empty.
+    check: state_field
+    fields: [reflection_passed, final_answer]
+    condition: when_field_true_then_non_empty
+    expected:
+      flag_field: reflection_passed
+      non_empty_field: final_answer
+
+  # --- output_guard ---
+
+  - id: ta_output_guard_blocks_harmful
+    node: output_guard
+    description: >
+      When the final_answer contains content the output guard should block
+      (tested via a seeded harmful-output fixture), status must be "blocked".
+    check: state_field
+    fields: [status]
+    condition: equals
+    expected:
+      status: blocked
+    negative_case: true
+
+  - id: ta_output_guard_passes_clean
+    node: output_guard
+    description: >
+      For all standard dataset entries, the output guard must pass the answer
+      (status="done") after reflection has already refined it.
+    check: state_field
+    fields: [status]
+    condition: equals
+    expected:
+      status: done
+
+  # --- end-to-end flow ---
+
+  - id: ta_flow_status_done
+    node: flow
+    description: >
+      A full happy-path run must end with status="done" and a non-empty
+      final_answer.
+    check: state_field
+    fields: [status, final_answer]
+    condition: equals
+    expected:
+      status: done
+      final_answer: non_empty
+
+  - id: ta_flow_all_nodes_executed
+    node: flow
+    description: >
+      Checkpoint history must contain at least one entry for each main node:
+      input_guard, planner, resume_guard, react_researcher, writer,
+      verify_subgraph, reflection_subgraph, output_guard.
+    check: checkpoint
+    condition: all_nodes_executed
+    expected:
+      - input_guard
+      - planner
+      - resume_guard
+      - react_researcher
+      - writer
+      - verify_subgraph
+      - reflection_subgraph
+      - output_guard
+
+  - id: ta_flow_guard_reason_empty_on_success
+    node: flow
+    description: >
+      On a successful run, guard_reason must be null — no guardrail was
+      triggered.
+    check: state_field
+    fields: [guard_reason]
+    condition: equals
+    expected:
+      guard_reason: null

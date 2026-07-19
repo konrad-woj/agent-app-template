@@ -1,0 +1,58 @@
+[project]
+name = "agent-lib"
+version = "0.1.0"
+description = "Example LangGraph agent library"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "langgraph>=1.2.0",
+    "langgraph-checkpoint-postgres>=3.1.0",
+    "psycopg-pool>=3.3.1",
+    "psycopg[binary]>=3.3.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov",
+    "pytest-asyncio",
+    "pytest-xdist>=3.6",
+    "pyright>=1.1",
+    "ruff",
+    "taskipy>=1.14.0",
+]
+
+[tool.uv.sources]
+logger = { git = "https://github.com/konrad-woj/logger.git" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["A", "B", "C", "E", "F", "W", "I", "UP", "FURB", "RUF", "PD"]
+exclude = [".venv"]
+ignore = ["E501", "C901"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.taskipy.tasks]
+precommit = { cmd = "uvx ruff format . && uvx ruff check . --fix --unsafe-fixes && uvx pyright .", help = "Lint, format and typecheck Python codebase" }
+test = { cmd = "pytest", help = "Run the full test suite in parallel" }
+test-cov = { cmd = "pytest --cov=churn_lib --cov-report=term-missing", help = "Run tests with coverage report" }
+
+[build-system]
+requires = ["uv_build>=0.11.9,<0.12.0"]
+build-backend = "uv_build"

@@ -1,0 +1,26 @@
+# Phase 5a node-level eval dataset — resume_guard (see PLAN.md, evals/node_tasks.py).
+#
+# resume_guard makes no LLM call at all (regex + GLiGuard only, both mocked
+# permissively by default) — included in the registry mainly for harness
+# consistency with the other five nodes. Its actual behavioural coverage lives
+# in tests/graph/nodes/test_resume_guard.py (wiring) and the Phase 5c
+# guardrail_redteam RESUME_GUARD_BYPASS category (adversarial). This dataset is
+# a placeholder that exercises the pass-through path only.
+#
+# expected_output fields:
+#   expected_status — "passed" (resume_guard's task maps its {} pass-through
+#                     return to "passed"; see make_resume_guard_task) or "blocked"
+
+dataset_name: node-resume-guard
+items:
+  - id: resume_guard_001
+    input:
+      message: "yes, please proceed"
+    expected_output:
+      expected_status: passed
+
+  - id: resume_guard_002
+    input:
+      message: "no thanks"
+    expected_output:
+      expected_status: passed

@@ -1,0 +1,29 @@
+# Phase 5a node-level eval dataset — verifier (see PLAN.md, evals/node_tasks.py).
+#
+# make_verifier_task defaults fact_check_tool to None, so every case here runs
+# the "no evidence available" path — the same path the real graph takes when
+# the MCP fact_check tool is unreachable. This tests that the verifier still
+# produces a well-formed verdict (not that it can fact-check without a tool).
+#
+# expected_output fields:
+#   has_verdict — supported/confidence/reason must all be present (non-None)
+
+dataset_name: node-verifier
+items:
+  - id: verifier_001
+    input:
+      claim: "ARPANET, the precursor to the modern internet, launched in 1969."
+    expected_output:
+      has_verdict: true
+
+  - id: verifier_002
+    input:
+      claim: "The Great Wall of China is visible from the Moon with the naked eye."
+    expected_output:
+      has_verdict: true
+
+  - id: verifier_003
+    input:
+      claim: "TCP/IP became the standard networking protocol suite in 1983."
+    expected_output:
+      has_verdict: true
