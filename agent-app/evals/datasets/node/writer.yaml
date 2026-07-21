@@ -1,0 +1,43 @@
+# Phase 5a node-level eval dataset — writer (see PLAN.md, evals/node_tasks.py).
+#
+# Tests draft-answer + claim-extraction quality against a real LLM (once wired
+# into evals/run.py per Phase 5e). expected_output is deliberately structural
+# (length/count thresholds), not content-matching — an LLM-judge rubric over
+# these fields belongs in the top-level evals/configs/scoring_rubric.yaml
+# (Phase 5b), not here.
+#
+# expected_output fields:
+#   min_draft_length — draft_answer must be at least this many characters
+#   min_claims        — claims must contain at least this many extracted facts
+
+dataset_name: node-writer
+items:
+  - id: writer_001
+    input:
+      question: "What are the main causes of the 2008 financial crisis?"
+      plan:
+        - "1. Research subprime mortgage lending practices"
+        - "2. Research the role of mortgage-backed securities and CDOs"
+    expected_output:
+      min_draft_length: 200
+      min_claims: 2
+
+  - id: writer_002
+    input:
+      question: "How does CRISPR-Cas9 gene editing work?"
+      plan:
+        - "1. Research the CRISPR-Cas9 mechanism"
+        - "2. Research guide RNA design"
+    expected_output:
+      min_draft_length: 200
+      min_claims: 2
+
+  - id: writer_003
+    input:
+      question: "What is the CAP theorem in distributed systems?"
+      plan:
+        - "1. Research consistency, availability, partition tolerance definitions"
+        - "2. Research real-world trade-offs (e.g. Cassandra vs. Zookeeper)"
+    expected_output:
+      min_draft_length: 150
+      min_claims: 1

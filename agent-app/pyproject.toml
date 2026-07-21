@@ -1,0 +1,101 @@
+[project]
+name = "agent-app"
+version = "0.1.0"
+description = "Example LangGraph agent app"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic-settings>=2.9",
+    "litellm>=1.70",
+    "langchain-core>=0.3",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=3.1",
+    "psycopg[binary,pool]>=3.3",
+    "duckduckgo-search>=8.0",
+    "httpx>=0.28",
+    "langfuse>=3.0",
+    "pyyaml>=6.0",
+    "fastmcp>=2.0",
+    "langchain-mcp-adapters>=0.1.3",
+    "logger",
+    "langchain-litellm>=0.6.6",
+    "gliner2>=1.3",
+    "slowapi>=0.1.9",
+]
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]",
+    "pytest>=9.0.3",
+    "pytest-cov",
+    "pytest-asyncio",
+    "pytest-xdist>=3.6",
+    "pyright>=1.1",
+    "ruff",
+    "taskipy>=1.14.0",
+    "pip-audit>=2.7",
+]
+
+[tool.uv.sources]
+logger = { git = "https://github.com/konrad-woj/logger.git" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["A", "B", "C", "E", "F", "W", "I", "UP", "FURB", "RUF", "PD"]
+exclude = [".venv"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "C901",   # function complexity — intentionally not limited
+    "B008",   # Depends() in argument defaults — this is the standard FastAPI DI pattern;
+              # FastAPI intercepts these at startup, they are never called as regular defaults
+    "RUF001", # ambiguous unicode in string literals — EN DASH used intentionally in range notation
+    "RUF002", # ambiguous unicode in docstrings — EN DASH used intentionally in range notation
+    "RUF003", # ambiguous unicode in comments — EN DASH used intentionally in range notation
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.taskipy.tasks]
+precommit = { cmd = "uvx ruff format . && uvx ruff check . --fix --unsafe-fixes && uvx pyright . && uv run pip-audit", help = "Lint, format, typecheck, and audit dependencies" }
+test = { cmd = "pytest", help = "Run the full test suite in parallel" }
+test-cov = { cmd = "pytest --cov=app --cov-report=term-missing", help = "Run tests with coverage report" }
+audit = { cmd = "pip-audit", help = "Scan dependencies for known CVEs" }
+mcp = { cmd = "uvicorn app.mcp.server:mcp --host 0.0.0.0 --port 8001", help = "Run the MCP tool server" }
+app = { cmd = "uvicorn app.main:app --reload", help = "Run the FastAPI app with auto-reload" }
+experiment = { cmd = "python evals/run_experiment.py evals/configs/exp_baseline.yaml", help = "Run the HTTP-driven eval experiment against a live agent-app server (requires app + Postgres)" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+# ml-app is deployed as a service (run via uvicorn), not published as a library.
+# The build target is kept for completeness — the package lives in app/, not src/.
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+addopts = "-n auto --dist loadscope --tb=short"

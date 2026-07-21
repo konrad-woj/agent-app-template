@@ -1,0 +1,29 @@
+# Phase 5a node-level eval config (see PLAN.md).
+#
+# PROVISIONAL: this file's schema is not yet consumed by any runner. Phase 5d
+# (evals/run_experiment.py) and Phase 5e (evals/run.py) will define the
+# authoritative Pydantic config schema for `task: node_eval` — see PLAN.md's
+# reference to the node_eval.yaml shape used by the audited reference project
+# (task: node_eval, node: <name>, deployment: <model>). This file documents the
+# intended shape now so the dataset-to-node mapping isn't lost before that
+# runner exists; expect it to be reshaped (or split into one file per node,
+# matching evals/datasets/node/*.yaml) once Phase 5e lands.
+
+type: node_eval
+nodes:
+  - node: planner
+    dataset: node/planner.yaml
+  - node: writer
+    dataset: node/writer.yaml
+  - node: verifier
+    dataset: node/verifier.yaml
+  - node: output_guard
+    dataset: node/output_guard.yaml
+  - node: input_guard
+    dataset: node/input_guard.yaml
+  - node: resume_guard
+    dataset: node/resume_guard.yaml
+
+# deployment/model used when running against a real LLM (Phase 5e). Until then,
+# tests/evals/test_node_tasks.py exercises every task above with a mocked LLM.
+deployment: null

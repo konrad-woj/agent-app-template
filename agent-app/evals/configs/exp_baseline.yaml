@@ -1,0 +1,22 @@
+# Baseline experiment config — Phase 5d (see PLAN.md).
+#
+# Usage:
+#   uv run python evals/run_experiment.py evals/configs/exp_baseline.yaml
+#   uv run task experiment
+#
+# variants are base_url-keyed, not model-keyed — see run_experiment.py's module
+# docstring for why a same-server model swap isn't possible against a single
+# running agent-app instance. To compare two models, start two app instances
+# (each with a different AGENT_LLM_MODEL) and add a second variant here
+# pointing at the second instance's base_url.
+
+experiment_name: baseline-001
+dataset: sample.yaml
+scoring_rubric: scoring_rubric.yaml
+
+variants:
+  - name: default
+    base_url: http://localhost:8000
+
+judge_model: null # null -> settings.llm_model (same backend the app itself uses)
+max_concurrency: 3

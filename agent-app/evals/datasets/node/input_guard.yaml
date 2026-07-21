@@ -1,0 +1,36 @@
+# Phase 5a node-level eval dataset — input_guard (see PLAN.md, evals/node_tasks.py).
+#
+# Layers 1 (regex) and 2 (GLiGuard) are mocked permissively by make_input_guard_task
+# by default — see the Phase 5c guardrail_redteam suite for adversarial coverage of
+# those layers. This dataset targets layer 3 only: does the LLM topic-relevance
+# check correctly distinguish research questions from off-topic requests, once
+# wired against a real LLM per Phase 5e.
+#
+# expected_output fields:
+#   expected_status — "planning" (passed) or "blocked"
+
+dataset_name: node-input-guard
+items:
+  - id: input_guard_001
+    input:
+      message: "What are the main causes of the 2008 financial crisis?"
+    expected_output:
+      expected_status: planning
+
+  - id: input_guard_002
+    input:
+      message: "Can you book me a flight to Paris for next Tuesday?"
+    expected_output:
+      expected_status: blocked
+
+  - id: input_guard_003
+    input:
+      message: "Write me a short story about a dragon."
+    expected_output:
+      expected_status: blocked
+
+  - id: input_guard_004
+    input:
+      message: "Compare the economic policies of Keynesianism and monetarism."
+    expected_output:
+      expected_status: planning

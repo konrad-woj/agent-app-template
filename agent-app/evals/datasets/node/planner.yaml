@@ -1,0 +1,35 @@
+# Phase 5a node-level eval dataset — planner (see PLAN.md, evals/node_tasks.py).
+#
+# Tests plan-generation quality against a real LLM (once wired into evals/run.py
+# per Phase 5e): does the planner decompose the question into concrete, actionable
+# steps and correctly reach the human-approval interrupt. GLiGuard is mocked
+# permissively by make_planner_task, so this dataset is not about guard behaviour
+# (see tests/graph/nodes/test_planner.py for that).
+#
+# expected_output fields:
+#   min_plan_steps   — plan must have at least this many steps
+#   must_reach_interrupt — planner must pause for approval (true for every safe,
+#                          on-topic question — this dataset has no unsafe cases)
+
+dataset_name: node-planner
+items:
+  - id: planner_001
+    input:
+      question: "What are the main causes of the 2008 financial crisis?"
+    expected_output:
+      min_plan_steps: 2
+      must_reach_interrupt: true
+
+  - id: planner_002
+    input:
+      question: "How does CRISPR-Cas9 gene editing work?"
+    expected_output:
+      min_plan_steps: 2
+      must_reach_interrupt: true
+
+  - id: planner_003
+    input:
+      question: "Compare the economic policies of Keynesianism and monetarism."
+    expected_output:
+      min_plan_steps: 2
+      must_reach_interrupt: true

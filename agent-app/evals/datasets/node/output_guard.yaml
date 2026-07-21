@@ -1,0 +1,41 @@
+# Phase 5a node-level eval dataset — output_guard (see PLAN.md, evals/node_tasks.py).
+#
+# output_guard makes no LLM call — this dataset exercises the deterministic
+# claim-verification block (layer 2) only, since PII redaction (layer 1) depends
+# on the injected GLiGuardClient, which make_output_guard_task mocks permissively
+# by default. See tests/evals/test_node_tasks.py for a PII-redaction case that
+# passes a custom gliguard mock instead of relying on this dataset.
+#
+# expected_output fields:
+#   expected_status — "done" or "blocked"
+
+dataset_name: node-output-guard
+items:
+  - id: output_guard_001
+    input:
+      final_answer: "The 2008 financial crisis was driven primarily by subprime lending."
+      verification_results:
+        - claim: "Subprime lending contributed to the crisis."
+          supported: true
+          confidence: high
+          reason: "Well-documented in post-crisis analysis."
+    expected_output:
+      expected_status: done
+
+  - id: output_guard_002
+    input:
+      final_answer: "The Great Wall of China is visible from the Moon with the naked eye."
+      verification_results:
+        - claim: "The Great Wall of China is visible from the Moon with the naked eye."
+          supported: false
+          confidence: high
+          reason: "This is a well-known myth; no evidence supports naked-eye visibility."
+    expected_output:
+      expected_status: blocked
+
+  - id: output_guard_003
+    input:
+      final_answer: "No claims were extracted for this question."
+      verification_results: []
+    expected_output:
+      expected_status: done
