@@ -73,7 +73,7 @@ venvPath = "."
 venv = ".venv"
 
 [tool.taskipy.tasks]
-precommit = { cmd = "uvx ruff format . && uvx ruff check . --fix --unsafe-fixes && uvx pyright . && uv run pip-audit", help = "Lint, format, typecheck, and audit dependencies" }
+precommits = { cmd = "uvx ruff format . && uvx ruff check . --fix --unsafe-fixes && uvx pyright . && uv run pip-audit", help = "Lint, format, typecheck, and audit dependencies" }
 test = { cmd = "pytest", help = "Run the full test suite in parallel" }
 test-cov = { cmd = "pytest --cov=app --cov-report=term-missing", help = "Run tests with coverage report" }
 audit = { cmd = "pip-audit", help = "Scan dependencies for known CVEs" }
