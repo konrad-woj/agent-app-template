@@ -48,7 +48,8 @@ def make_resume_guard_node(gliguard: GLiGuardClient) -> Callable:
         user_text = result
 
         if last_human is not None and user_text != raw_text:
-            assert last_human.id is not None
+            if last_human.id is None:
+                raise RuntimeError("HumanMessage missing id; add_messages reducer should always assign one")
             return {"messages": [RemoveMessage(id=last_human.id), HumanMessage(content=user_text)]}
         return {}
 

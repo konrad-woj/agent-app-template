@@ -60,7 +60,8 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
 
         sanitized_messages: list[AnyMessage | RemoveMessage] = []
         if last_human is not None and user_text != raw_text:
-            assert last_human.id is not None
+            if last_human.id is None:
+                raise RuntimeError("HumanMessage missing id; add_messages reducer should always assign one")
             sanitized_messages = [RemoveMessage(id=last_human.id), HumanMessage(content=user_text)]
 
         # Layer 3: LLM topic relevance check (not safety — GLiGuard owns that).
