@@ -192,7 +192,7 @@ flowchart TD
 **State (`AgentState`)**:
 ```python
 class AgentState(TypedDict):
-    messages: Annotated[list[AnyMessage], operator.add]
+    messages: Annotated[list[AnyMessage], add_messages]  # supports RemoveMessage(id=...)
     plan: list[str]  # Planner output
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer
