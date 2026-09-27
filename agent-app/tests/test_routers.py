@@ -245,7 +245,14 @@ class TestChatFreshTurn:
         assert response.json()["status"] == "done"
 
     async def test_dead_letter_info_surfaced_in_chat_response(self, client: AsyncClient, mock_graph: MagicMock) -> None:
-        dead_letter_info = {"failed_node": "input_guard", "error_type": "RuntimeError", "error_message": "boom"}
+        dead_letter_info = {
+            "failed_node": "input_guard",
+            "error_type": "RuntimeError",
+            "error_message": "boom",
+            "traceback": "Traceback (most recent call last): ...",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+        public_dead_letter = {"failed_node": "input_guard", "timestamp": "2026-01-01T00:00:00+00:00"}
         mock_graph.aget_state = AsyncMock(return_value=_snapshot())
         mock_graph.ainvoke = AsyncMock(return_value={"status": "dead_lettered", "dead_letter": dead_letter_info})
 
@@ -253,7 +260,7 @@ class TestChatFreshTurn:
 
         data = response.json()
         assert data["status"] == "dead_lettered"
-        assert data["dead_letter"] == dead_letter_info
+        assert data["dead_letter"] == public_dead_letter  # internals stripped
 
 
 class TestChatErrorClassification:
@@ -533,14 +540,21 @@ class TestReplay:
         assert response.json()["detail"] == "LLM service unavailable"
 
     async def test_dead_letter_info_surfaced_in_response(self, client: AsyncClient, mock_graph: MagicMock) -> None:
-        dead_letter_info = {"failed_node": "input_guard", "error_type": "RuntimeError", "error_message": "boom"}
+        dead_letter_info = {
+            "failed_node": "input_guard",
+            "error_type": "RuntimeError",
+            "error_message": "boom",
+            "traceback": "Traceback (most recent call last): ...",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+        public_dead_letter = {"failed_node": "input_guard", "timestamp": "2026-01-01T00:00:00+00:00"}
         mock_graph.ainvoke = AsyncMock(return_value={"status": "dead_lettered", "dead_letter": dead_letter_info})
 
         response = await client.post("/v1/threads/t-1/replay", json={"checkpoint_id": "cp-1"})
 
         data = response.json()
         assert data["status"] == "dead_lettered"
-        assert data["dead_letter"] == dead_letter_info
+        assert data["dead_letter"] == public_dead_letter  # internals stripped
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +769,14 @@ class TestChatStream:
         assert token_frames[0]["data"]["token"] == "Final answer"
 
     async def test_stream_dead_lettered_arrives_as_error(self, client: AsyncClient, mock_graph: MagicMock) -> None:
-        dead_letter_info = {"failed_node": "input_guard", "error_type": "RuntimeError", "error_message": "boom"}
+        dead_letter_info = {
+            "failed_node": "input_guard",
+            "error_type": "RuntimeError",
+            "error_message": "boom",
+            "traceback": "Traceback (most recent call last): ...",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+        public_dead_letter = {"failed_node": "input_guard", "timestamp": "2026-01-01T00:00:00+00:00"}
         mock_graph.aget_state = AsyncMock(
             side_effect=[
                 _snapshot(),
@@ -770,7 +791,7 @@ class TestChatStream:
         assert len(frames) == 1
         assert frames[0]["event"] == "error"
         assert frames[0]["data"]["status"] == "dead_lettered"
-        assert frames[0]["data"]["dead_letter"] == dead_letter_info
+        assert frames[0]["data"]["dead_letter"] == public_dead_letter  # internals stripped
 
     async def test_stream_disconnect_stops_generator(self) -> None:
         mock_graph = MagicMock()

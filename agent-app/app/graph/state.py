@@ -4,28 +4,32 @@ LangGraph passes the full state dict into every node and merges each node's
 returned dict back into state after the node completes.  Fields that carry
 a *reducer* annotation are merged with that function instead of overwritten:
 
-  messages: Annotated[list[AnyMessage], operator.add]
+  messages: Annotated[list[AnyMessage], add_messages]
 
-The ``operator.add`` reducer *appends* the new messages list to the existing
+The ``add_messages`` reducer appends the new messages list to the existing
 one, so each node only returns the messages it produced — not the whole
-history.  Without this annotation every node invocation would replace the
-messages list with its own output.
+history.  It also assigns a stable ``id`` to any message that lacks one, and
+lets a node replace or delete a specific past message by returning a
+``RemoveMessage(id=...)`` alongside its replacement (see input_guard and
+resume_guard, which use this to swap the raw user message for its sanitised
+form once cleaned).
 
 All other fields (plain TypedDict entries) are last-write-wins: whichever node
 writes them last wins. That is intentional for scalar fields like ``status``.
 """
 
-import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 from app.graph.nodes._dead_letter import DeadLetterInfo
 
 
 class AgentState(TypedDict):
-    # operator.add reducer: nodes append to this list, never replace it.
-    messages: Annotated[list[AnyMessage], operator.add]
+    # add_messages reducer: nodes append to this list by default, and may
+    # replace/delete a specific message via RemoveMessage(id=...).
+    messages: Annotated[list[AnyMessage], add_messages]
     plan: list[str]  # planner output; each entry is one research step
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer

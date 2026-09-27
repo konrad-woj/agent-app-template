@@ -51,7 +51,7 @@ venv = ".venv"
 [tool.taskipy.tasks]
 precommit = { cmd = "uvx ruff format . && uvx ruff check . --fix --unsafe-fixes && uvx pyright .", help = "Lint, format and typecheck Python codebase" }
 test = { cmd = "pytest", help = "Run the full test suite in parallel" }
-test-cov = { cmd = "pytest --cov=churn_lib --cov-report=term-missing", help = "Run tests with coverage report" }
+test-cov = { cmd = "pytest --cov=agent_lib --cov-report=term-missing", help = "Run tests with coverage report" }
 
 [build-system]
 requires = ["uv_build>=0.11.9,<0.12.0"]
