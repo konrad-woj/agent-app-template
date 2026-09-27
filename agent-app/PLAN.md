@@ -192,18 +192,20 @@ flowchart TD
 **State (`AgentState`)**:
 ```python
 class AgentState(TypedDict):
-    messages: Annotated[list[AnyMessage], operator.add]
-    plan: list[str]                     # Planner output
+    messages: Annotated[list[AnyMessage], add_messages]  # supports RemoveMessage(id=...)
+    plan: list[str]  # Planner output
     plan_approved: bool
-    claims: list[str]                   # verifiable factual claims extracted by writer
-    verification_results: list[dict]    # per-claim results from verify_subgraph
-    react_steps: int                    # incremented each ReAct iteration (observability only)
-    draft_answer: str                   # writer output before reflection
-    reflection_attempts: int            # reflection loop counter
+    claims: list[str]  # verifiable factual claims extracted by writer
+    verification_results: list[dict]  # per-claim results from verify_subgraph
+    react_steps: int  # incremented each ReAct iteration (observability only)
+    draft_answer: str  # writer output before reflection
+    reflection_attempts: int  # reflection loop counter
     reflection_passed: bool
-    final_answer: str                   # output_guard-approved answer
-    status: str                         # "planning"|"researching"|"writing"|"verifying"|"reflecting"|"done"|"aborted"|"blocked"|"dead_lettered"
-    guard_reason: str | None            # set when input_guard or output_guard blocks
+    final_answer: str  # output_guard-approved answer
+    status: (
+        str  # "planning"|"researching"|"writing"|"verifying"|"reflecting"|"done"|"aborted"|"blocked"|"dead_lettered"
+    )
+    guard_reason: str | None  # set when input_guard or output_guard blocks
     dead_letter: DeadLetterInfo | None  # set by with_dead_letter decorator on any unhandled exception
 ```
 
@@ -233,13 +235,14 @@ before the subgraph exits.
 ```python
 # subgraphs/verification.py
 class VerificationState(TypedDict):
-    claims: list[str]                              # fan-out source
-    claim: str                                     # per-branch, injected by Send
-    results: Annotated[list[dict], operator.add]   # fan-in target — internal to subgraph
+    claims: list[str]  # fan-out source
+    claim: str  # per-branch, injected by Send
+    results: Annotated[list[dict], operator.add]  # fan-in target — internal to subgraph
+
 
 def route_to_verifiers(state: VerificationState) -> list[Send]:
-    return [Send("verifier", {"claims": [], "claim": c, "results": []})
-            for c in state["claims"]]
+    return [Send("verifier", {"claims": [], "claim": c, "results": []}) for c in state["claims"]]
+
 
 def make_verifier_node(llm, fact_check_tool):
     async def verifier_node(state: VerificationState, config: RunnableConfig) -> dict:
@@ -250,9 +253,19 @@ def make_verifier_node(llm, fact_check_tool):
         messages = [SystemMessage(_VERIFY_PROMPT), HumanMessage(f"Claim: {claim}\n\nEvidence:\n{evidence}")]
         response = await llm_invoke_with_retry(llm, messages, config)
         parsed = _VerifyResult.model_validate_json(str(response.content))
-        return {"results": [{"claim": claim, "supported": parsed.supported,
-                              "confidence": parsed.confidence, "reason": parsed.reason}]}
+        return {
+            "results": [
+                {
+                    "claim": claim,
+                    "supported": parsed.supported,
+                    "confidence": parsed.confidence,
+                    "reason": parsed.reason,
+                }
+            ]
+        }
+
     return verifier_node
+
 
 verify_graph = StateGraph(VerificationState)
 verify_graph.add_node("router", lambda s: s)
@@ -283,7 +296,9 @@ def make_react_researcher_node(llm_with_tools: BaseChatModel) -> Callable:
     async def react_researcher(state: AgentState, config: RunnableConfig) -> dict:
         response = await llm_with_tools.ainvoke(state["messages"], config)
         return {"messages": [response], "react_steps": state["react_steps"] + 1}
+
     return react_researcher
+
 
 # workflow.py — tools loaded before compile; condition routes to "writer" not END
 def compile_graph(
@@ -310,9 +325,10 @@ def compile_graph(
     ...
     return graph.compile(checkpointer=checkpointer)
 
+
 # main.py lifespan — tools loaded once at startup; client has no async context manager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    mcp_tools = await load_mcp_tools(settings.mcp_server_url)   # await — get_tools() is async
+    mcp_tools = await load_mcp_tools(settings.mcp_server_url)  # await — get_tools() is async
     async with AsyncPostgresSaver.from_conn_string(settings.db_uri) as checkpointer:
         await checkpointer.setup()
         app.state.graph = compile_graph(checkpointer, build_llm(), mcp_tools)
@@ -335,13 +351,17 @@ class ReflectionState(TypedDict):
     reflection_attempts: int
     passed: bool
 
+
 MAX_REFLECTION_ATTEMPTS = settings.max_reflection_attempts  # default 5
+
 
 def should_refine(state: ReflectionState) -> Literal["refiner", END]:
     ceiling_hit = state["reflection_attempts"] >= MAX_REFLECTION_ATTEMPTS
     return END if state["passed"] or ceiling_hit else "refiner"
 
+
 reflection_subgraph = reflection_graph.compile()
+
 
 # workflow.py — wrapper maps parent keys ↔ subgraph keys
 async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
@@ -360,6 +380,7 @@ async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
         "reflection_attempts": result["reflection_attempts"],
     }
 
+
 parent_graph.add_node("reflection_subgraph", run_reflection)
 ```
 
@@ -375,10 +396,12 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("research-tools")
 
+
 @mcp.tool()
 async def web_search(query: str) -> str:
     """Search the web and return a summary of results."""
     ...
+
 
 @mcp.tool()
 async def fetch_url(url: str) -> str:
@@ -391,13 +414,12 @@ async def fetch_url(url: str) -> str:
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import BaseTool
 
+
 async def load_mcp_tools(server_url: str) -> list[BaseTool]:
     # MultiServerMCPClient does NOT support async context manager (__aenter__ raises
     # NotImplementedError as of 0.1.x).  Instantiate directly and await get_tools().
-    client = MultiServerMCPClient(
-        {"research": {"url": server_url, "transport": "streamable_http"}}
-    )
-    return await client.get_tools()   # get_tools() is async — must be awaited
+    client = MultiServerMCPClient({"research": {"url": server_url, "transport": "streamable_http"}})
+    return await client.get_tools()  # get_tools() is async — must be awaited
 ```
 
 Loading tools once at startup only avoids re-*discovering* them on every node call —
@@ -450,15 +472,18 @@ replicas — for real per-replica-aggregated alerting, replace it with a Prometh
 ```python
 # nodes/_dead_letter.py
 
+
 class DeadLetterInfo(TypedDict):
     failed_node: str
     error_type: str
     error_message: str
     traceback: str
-    timestamp: str   # ISO-8601
+    timestamp: str  # ISO-8601
+
 
 def with_dead_letter(node_name: str) -> Callable:
     """Decorator for any node that performs LLM or I/O work."""
+
     def decorator(fn: Callable) -> Callable:
         async def wrapper(state: AgentState, config: RunnableConfig) -> dict:
             try:
@@ -474,8 +499,11 @@ def with_dead_letter(node_name: str) -> Callable:
                     ),
                     "status": "dead_lettered",
                 }
+
         return wrapper
+
     return decorator
+
 
 async def dead_letter_node(state: AgentState, config: RunnableConfig) -> dict:
     """Terminal node: structured-log the DeadLetterInfo and return."""
@@ -483,15 +511,18 @@ async def dead_letter_node(state: AgentState, config: RunnableConfig) -> dict:
     # Checkpointer persists state automatically — record is replayable via time-travel.
     return {}
 
+
 # workflow.py — shared router inserted after every node that can fail
 def after(next_node: str) -> Callable[[AgentState], str]:
     def _route(state: AgentState) -> str:
         return "dead_letter" if state.get("dead_letter") else next_node
+
     return _route
 
+
 # Usage on each edge:
-graph.add_conditional_edges("planner", ...)       # routes to plan_review or dead_letter
-graph.add_conditional_edges("plan_review", ...)   # routes to resume_guard or dead_letter
+graph.add_conditional_edges("planner", ...)  # routes to plan_review or dead_letter
+graph.add_conditional_edges("plan_review", ...)  # routes to resume_guard or dead_letter
 graph.add_conditional_edges("resume_guard", ...)  # routes to react_researcher or dead_letter
 graph.add_conditional_edges("writer", after("verify_subgraph"))
 graph.add_conditional_edges("verify_subgraph", after("reflection_subgraph"))
@@ -569,7 +600,7 @@ async def llm_invoke_with_retry(llm: BaseChatModel, messages: list[AnyMessage], 
             return await llm_invoke(llm, messages, config)
         except (LLMRateLimitError, LLMServiceUnavailableError) as exc:
             last_exc = exc
-            wait = min(2 ** attempt, 30)
+            wait = min(2**attempt, 30)
             await asyncio.sleep(wait)
         except LLMError:
             raise
@@ -642,6 +673,7 @@ GLiGuard was chosen because it covers both prompt and response classification, s
 # nodes/_llm_invoke.py
 from langchain_community.chat_models import ChatLiteLLM
 
+
 def build_llm() -> ChatLiteLLM:
     # Qwen3 thinking mode: enable_thinking must go through model_kwargs so
     # LiteLLM forwards it to the llama.cpp/Unsloth server.  ChatLiteLLM's own
@@ -666,6 +698,7 @@ Different nodes have different latency/quality trade-offs. Guards want a fast, c
 # nodes/_llm_invoke.py
 from dataclasses import dataclass
 
+
 @dataclass
 class NodeLLMConfig:
     model: str | None = None
@@ -674,13 +707,14 @@ class NodeLLMConfig:
     timeout_seconds: float | None = None
     max_retries: int | None = None
 
+
 def build_llm(override: NodeLLMConfig | None = None) -> ChatLiteLLM:
     cfg = override or NodeLLMConfig()
     return ChatLiteLLM(
         model=cfg.model or settings.llm_model,
         api_base=settings.llm_base_url,
         api_key=settings.llm_api_key,
-        temperature=cfg.temperature,          # None → provider default
+        temperature=cfg.temperature,  # None → provider default
         model_kwargs={"enable_thinking": cfg.thinking if cfg.thinking is not None else settings.llm_thinking},
     )
 ```
@@ -695,14 +729,17 @@ def _build_graph(
     node_llms: dict[str, BaseChatModel] | None = None,
 ) -> StateGraph:
     nlm = node_llms or {}
-    graph.add_node("input_guard",  make_input_guard_node(nlm.get("input_guard", default_llm)))
-    graph.add_node("planner",      make_planner_node(nlm.get("planner", default_llm)))
-    graph.add_node("react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools))
-    graph.add_node("writer",       make_writer_node(nlm.get("writer", default_llm)))
+    graph.add_node("input_guard", make_input_guard_node(nlm.get("input_guard", default_llm)))
+    graph.add_node("planner", make_planner_node(nlm.get("planner", default_llm)))
+    graph.add_node(
+        "react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools)
+    )
+    graph.add_node("writer", make_writer_node(nlm.get("writer", default_llm)))
     graph.add_node("output_guard", make_output_guard_node(nlm.get("output_guard", default_llm)))
     # reflection subgraph receives its own LLM via build_reflection_subgraph(llm)
     graph.add_node("reflection_subgraph", _make_run_reflection(nlm.get("reflection", default_llm)))
     ...
+
 
 def compile_graph(
     checkpointer: AsyncPostgresSaver,
@@ -719,10 +756,10 @@ def compile_graph(
 ```python
 # main.py lifespan — intent-declaring config map; adjust per deployment
 node_llm_configs = {
-    "planner":          NodeLLMConfig(thinking=True),
+    "planner": NodeLLMConfig(thinking=True),
     "react_researcher": NodeLLMConfig(thinking=True),
-    "writer":           NodeLLMConfig(thinking=True),
-    "reflection":       NodeLLMConfig(thinking=True),
+    "writer": NodeLLMConfig(thinking=True),
+    "reflection": NodeLLMConfig(thinking=True),
     # input_guard and output_guard: default (no thinking, faster)
 }
 app.state.graph = compile_graph(checkpointer, mcp_tools, node_llm_configs)
@@ -871,11 +908,15 @@ independently corroborated by non-lab sources during the audit:
       score: Literal[0, 1, 2, 3, 4]
       confidence: Literal["high", "low"]
       reason: str  # one-line summary for the report/log
+
+
   class HolisticCriterionVerdict(BaseModel):
       reasoning: str
       score: Literal[0, 1, 2]
       confidence: Literal["high", "low"]
       reason: str
+
+
   class QualityVerdict(BaseModel):
       stack_alignment: CriterionVerdict
       pain_point_coverage: CriterionVerdict

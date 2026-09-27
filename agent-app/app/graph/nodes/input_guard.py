@@ -10,6 +10,12 @@ short-circuiting on block:
   3. LLM topic check — research-domain relevance only (safety is owned by layer 2);
      ~300ms.
 
+Layer 1 only ever strips content out of the raw text — it never adds anything
+back in — so once sanitisation changes the text, the original HumanMessage in
+state is replaced with the cleaned version via RemoveMessage(id=...). Without
+this, downstream nodes (planner, writer) would re-read the raw, unsanitised
+text straight out of state via get_last_human_text, silently undoing layer 1.
+
 On safe:   routes to planner via after("planner") in workflow.py.
 On block:  sets status="blocked", guard_reason=<reason>, routes to END.
 On error:  with_dead_letter catches the exception and routes to dead_letter.
@@ -18,7 +24,7 @@ On error:  with_dead_letter catches the exception and routes to dead_letter.
 from collections.abc import Callable
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from logger import get_logger
 
@@ -26,7 +32,7 @@ from app.graph.nodes._dead_letter import with_dead_letter
 from app.graph.nodes._guard_layers import run_sanitize_and_injection_check
 from app.graph.nodes._guard_verdict import GuardVerdict
 from app.graph.nodes._llm_invoke import llm_invoke_with_retry, parse_structured
-from app.graph.nodes._messages import get_last_human_text
+from app.graph.nodes._messages import get_last_human_message
 from app.guards.gliguard import GLiGuardClient
 from app.prompts.loader import load_system
 
@@ -40,7 +46,8 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
 
     @with_dead_letter("input_guard")
     async def input_guard(state: "AgentState", config: RunnableConfig) -> dict:  # type: ignore[name-defined]  # noqa: F821
-        raw_text = get_last_human_text(state["messages"])
+        last_human = get_last_human_message(state["messages"])
+        raw_text = str(last_human.content) if last_human else ""
         logger.info("input_guard.inputs", input_text_length=len(raw_text))
 
         # Layers 1-2: regex sanitisation, then GLiGuard injection/jailbreak detection.
@@ -50,6 +57,12 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
         if isinstance(result, dict):
             return result
         user_text = result
+
+        sanitized_messages: list[AnyMessage | RemoveMessage] = []
+        if last_human is not None and user_text != raw_text:
+            if last_human.id is None:
+                raise RuntimeError("HumanMessage missing id; add_messages reducer should always assign one")
+            sanitized_messages = [RemoveMessage(id=last_human.id), HumanMessage(content=user_text)]
 
         # Layer 3: LLM topic relevance check (not safety — GLiGuard owns that).
         messages = [
@@ -63,11 +76,12 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
             return {
                 "status": "blocked",
                 "guard_reason": "Input guard could not parse LLM response — treating as off-topic.",
+                "messages": sanitized_messages,
             }
 
         logger.info("input_guard.layer3_verdict", verdict=verdict.verdict, reason=verdict.reason)
         if verdict.verdict == "safe":
-            return {"status": "planning"}
-        return {"status": "blocked", "guard_reason": verdict.reason}
+            return {"status": "planning", "messages": sanitized_messages}
+        return {"status": "blocked", "guard_reason": verdict.reason, "messages": sanitized_messages}
 
     return input_guard
