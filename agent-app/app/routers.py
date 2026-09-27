@@ -164,6 +164,18 @@ def _is_interrupted(snapshot) -> bool:
     return bool(snapshot.next) and bool(snapshot.values)
 
 
+def _public_dead_letter(dead_letter: dict | None) -> dict | None:
+    """Strip internals (traceback, raw exception message) before a DeadLetterInfo reaches an API client.
+
+    The full record — including traceback — is already structured-logged by
+    with_dead_letter and persisted in the checkpoint for internal debugging via
+    /v1/threads/{id}/history; it should never also go out over the wire.
+    """
+    if dead_letter is None:
+        return None
+    return {"failed_node": dead_letter.get("failed_node"), "timestamp": dead_letter.get("timestamp")}
+
+
 @router.post("/v1/chat", response_model=ChatResponse, tags=["chat"])
 @limiter.limit(settings.rate_limit or _DEFAULT_RATE_LIMIT)
 async def chat(
@@ -229,7 +241,7 @@ async def chat(
         interrupt_value=_extract_interrupt_value(post_snapshot) if now_interrupted else None,
         final_answer=result.get("final_answer"),
         guard_reason=result.get("guard_reason"),
-        dead_letter=result.get("dead_letter"),
+        dead_letter=_public_dead_letter(result.get("dead_letter")),
     )
 
 
@@ -296,7 +308,8 @@ async def _generate(
         state = snapshot.values
         status = state.get("status", "done")
         if status == "dead_lettered":
-            yield f"event: error\ndata: {json.dumps({'status': status, 'dead_letter': state.get('dead_letter')})}\n\n"
+            dead_letter = _public_dead_letter(state.get("dead_letter"))
+            yield f"event: error\ndata: {json.dumps({'status': status, 'dead_letter': dead_letter})}\n\n"
         else:
             yield f"event: done\ndata: {json.dumps({'status': status, 'final_answer': state.get('final_answer')})}\n\n"
 
@@ -425,5 +438,5 @@ async def replay(
         status=result.get("status", "done"),
         final_answer=result.get("final_answer"),
         guard_reason=result.get("guard_reason"),
-        dead_letter=result.get("dead_letter"),
+        dead_letter=_public_dead_letter(result.get("dead_letter")),
     )
