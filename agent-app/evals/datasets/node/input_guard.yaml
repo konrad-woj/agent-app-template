@@ -4,7 +4,7 @@
 # by default — see the Phase 5c guardrail_redteam suite for adversarial coverage of
 # those layers. This dataset targets layer 3 only: does the LLM topic-relevance
 # check correctly distinguish research questions from off-topic requests, once
-# wired against a real LLM per Phase 5e.
+# run against a real LLM via `uv run python evals/run.py node_eval`.
 #
 # expected_output fields:
 #   expected_status — "planning" (passed) or "blocked"

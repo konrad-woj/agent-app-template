@@ -1,7 +1,7 @@
 # Phase 5a node-level eval dataset — writer (see PLAN.md, evals/node_tasks.py).
 #
-# Tests draft-answer + claim-extraction quality against a real LLM (once wired
-# into evals/run.py per Phase 5e). expected_output is deliberately structural
+# Tests draft-answer + claim-extraction quality against a real LLM (`uv run
+# python evals/run.py node_eval`). expected_output is deliberately structural
 # (length/count thresholds), not content-matching — an LLM-judge rubric over
 # these fields belongs in the top-level evals/configs/scoring_rubric.yaml
 # (Phase 5b), not here.

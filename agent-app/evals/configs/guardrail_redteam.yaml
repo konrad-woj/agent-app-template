@@ -1,8 +1,8 @@
 # Guardrail red-team suite config — Phase 5c (see PLAN.md and evals/guardrail_redteam.py).
 #
 # Usage:
-#   uv run python evals/guardrail_redteam.py                   # this file
-#   uv run python evals/guardrail_redteam.py --include-multiturn
+#   uv run python evals/run.py guardrail_redteam
+#   uv run python evals/guardrail_redteam.py --include-multiturn   # script flags: --base-url, --include-multiturn
 #
 # Requires a running agent-app (and Postgres). Layer-1 and INPUT_VALIDATION cases
 # need no LLM; the others hit GLiGuard and the LLM topic check, and report ERROR

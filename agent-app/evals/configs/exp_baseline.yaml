@@ -1,7 +1,7 @@
 # Baseline experiment config — Phase 5d (see PLAN.md).
 #
 # Usage:
-#   uv run python evals/run_experiment.py evals/configs/exp_baseline.yaml
+#   uv run python evals/run.py exp_baseline
 #   uv run task experiment
 #
 # variants are base_url-keyed, not model-keyed — see run_experiment.py's module
@@ -10,6 +10,7 @@
 # (each with a different AGENT_LLM_MODEL) and add a second variant here
 # pointing at the second instance's base_url.
 
+type: experiment   # dispatch key for evals/run.py
 experiment_name: baseline-001
 dataset: sample.yaml
 scoring_rubric: scoring_rubric.yaml

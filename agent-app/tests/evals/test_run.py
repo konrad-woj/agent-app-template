@@ -1,0 +1,136 @@
+"""Tests for evals/run.py (dispatcher) and evals/node_eval.py (node_eval runner) — Phase 5e."""
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from langchain_core.messages import AIMessage
+
+from evals import node_eval, run
+from evals.node_eval import NodeEvalConfig, NodeSpec, check_item, load_node_dataset, run_async
+from evals.node_tasks import NODE_TASK_REGISTRY
+
+
+class TestResolve:
+    @pytest.mark.parametrize(
+        ("name", "expected_type"),
+        [("exp_baseline", "experiment"), ("guardrail_redteam", "guardrail_redteam"), ("node_eval", "node_eval")],
+    )
+    def test_bare_name_resolves_to_config_and_type(self, name: str, expected_type: str) -> None:
+        path, config_type = run.resolve(name)
+        assert path == run.CONFIGS_DIR / f"{name}.yaml"
+        assert config_type == expected_type
+
+    def test_name_with_yaml_suffix_and_explicit_path_resolve(self) -> None:
+        assert run.resolve("node_eval.yaml")[1] == "node_eval"
+        assert run.resolve(str(run.CONFIGS_DIR / "node_eval.yaml"))[1] == "node_eval"
+
+    def test_unknown_name_lists_available_configs(self) -> None:
+        with pytest.raises(run.ConfigError) as exc:
+            run.resolve("does_not_exist")
+        for name in ("exp_baseline", "guardrail_redteam", "node_eval"):
+            assert name in str(exc.value)
+
+    def test_config_without_runnable_type_is_rejected(self) -> None:
+        with pytest.raises(run.ConfigError, match="type"):
+            run.resolve("scoring_rubric")
+
+    def test_available_configs_lists_only_runnable_ones(self) -> None:
+        available = run.available_configs()
+        assert available == {
+            "exp_baseline": "experiment",
+            "guardrail_redteam": "guardrail_redteam",
+            "node_eval": "node_eval",
+        }
+
+
+class TestDispatch:
+    @pytest.mark.parametrize(
+        ("name", "module"),
+        [
+            ("exp_baseline", "evals.run_experiment"),
+            ("guardrail_redteam", "evals.guardrail_redteam"),
+            ("node_eval", "evals.node_eval"),
+        ],
+    )
+    def test_dispatches_to_the_matching_runner(self, name: str, module: str) -> None:
+        with patch(f"{module}.run_from_config", return_value=7) as runner:
+            assert run.dispatch(name) == 7
+        runner.assert_called_once_with(run.CONFIGS_DIR / f"{name}.yaml")
+
+    def test_main_exits_2_with_a_clear_error_on_unknown_config(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("sys.argv", ["run.py", "nope"]), pytest.raises(SystemExit) as exc:
+            run.main()
+        assert exc.value.code == 2
+        assert "no config named 'nope'" in capsys.readouterr().err
+
+
+class TestNodeEvalConfig:
+    def test_shipped_config_covers_every_node_task(self) -> None:
+        cfg = node_eval.load_config(run.CONFIGS_DIR / "node_eval.yaml")
+        assert {s.node for s in cfg.nodes} == set(NODE_TASK_REGISTRY)
+
+    def test_unknown_node_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown node"):
+            NodeSpec(node="critic", dataset="node/x.yaml")
+
+    def test_every_shipped_dataset_loads(self) -> None:
+        cfg = node_eval.load_config(run.CONFIGS_DIR / "node_eval.yaml")
+        for spec in cfg.nodes:
+            assert load_node_dataset(spec.dataset), spec.dataset
+
+    def test_unknown_expectation_key_fails_fast(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("items:\n  - id: x\n    input: {}\n    expected_output: {min_plan_step: 2}\n")
+        with patch.object(node_eval, "_DATASETS_DIR", tmp_path), pytest.raises(ValueError, match="min_plan_step"):
+            load_node_dataset("bad.yaml")
+
+
+class TestCheckItem:
+    def test_all_expectations_met(self) -> None:
+        out = {"plan": ["a", "b"], "reached_interrupt": True}
+        assert check_item({"min_plan_steps": 2, "must_reach_interrupt": True}, out) == []
+
+    def test_reports_every_failed_expectation(self) -> None:
+        failures = check_item({"min_draft_length": 10, "min_claims": 2}, {"draft_answer": "short", "claims": []})
+        assert len(failures) == 2
+
+    def test_has_verdict_requires_all_three_fields(self) -> None:
+        assert check_item({"has_verdict": True}, {"supported": True, "confidence": None, "reason": "r"})
+
+
+def _mock_llm(content: str) -> MagicMock:
+    llm = MagicMock()
+    llm.metadata = None
+    llm.ainvoke = AsyncMock(return_value=AIMessage(content=content))
+    return llm
+
+
+class TestRunAsync:
+    async def test_no_llm_nodes_pass_against_their_shipped_datasets(self) -> None:
+        # output_guard and resume_guard make no LLM call, so their datasets are fully deterministic.
+        cfg = NodeEvalConfig(
+            nodes=[
+                NodeSpec(node="output_guard", dataset="node/output_guard.yaml"),
+                NodeSpec(node="resume_guard", dataset="node/resume_guard.yaml"),
+            ]
+        )
+        assert await run_async(cfg, llm=_mock_llm("unused"), save=False) == 0
+
+    async def test_unmet_expectation_fails_the_run(self) -> None:
+        # An always-"safe" topic check can't block the off-topic input_guard items.
+        cfg = NodeEvalConfig(nodes=[NodeSpec(node="input_guard", dataset="node/input_guard.yaml")])
+        assert await run_async(cfg, llm=_mock_llm('{"verdict": "safe", "reason": "ok"}'), save=False) == 1
+
+    async def test_dead_lettered_node_is_an_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from app.exceptions import LLMServiceUnavailableError
+
+        llm = MagicMock()
+        llm.metadata = {"max_retries": 0}
+        llm.ainvoke = AsyncMock(side_effect=LLMServiceUnavailableError("down"))
+        cfg = NodeEvalConfig(nodes=[NodeSpec(node="writer", dataset="node/writer.yaml")])
+        assert await run_async(cfg, llm=llm, save=False) == 1
+        assert "[ERROR] writer/" in capsys.readouterr().out
+
+    async def test_empty_selection_fails_closed(self) -> None:
+        assert await run_async(NodeEvalConfig(nodes=[]), llm=_mock_llm(""), save=False) == 1

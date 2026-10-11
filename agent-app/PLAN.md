@@ -20,10 +20,10 @@
 - [MCP Server Startup](#mcp-server-startup)
 - [Key API Endpoints](#key-api-endpoints)
 - [Phases](#phases)
-  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5e-unified-entrypoint)
+  - [Phase 5 — Evals](#phase-5--evals--all-sub-phases-implemented)
     - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence---implemented)
     - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite---implemented)
-    - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy)
+    - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy---implemented)
   - [Phase 6 — Prompt Externalization (i18n-ready)](#phase-6--prompt-externalization-i18n-ready---implemented)
 - [Dependencies](#dependencies)
 - [README.md Guide Sections](#readmemd-guide-sections)
@@ -69,17 +69,21 @@ agent-app/
 ├── PLAN.md
 ├── langgraph.json
 ├── evals/
+│   ├── run.py                     # ✓ Phase 5e — single entrypoint: run.py <config-name>, dispatch on `type:`
 │   ├── smoke_test.py              # ✓ live QA script: health, guards, interrupt, SSE, time-travel
 │   ├── node_tasks.py              # ✓ Phase 5a — node-level eval tier (registry of 6 task factories)
+│   ├── node_eval.py               # ✓ Phase 5e — runs node_tasks over datasets/node/ against a real LLM
+│   ├── guardrail_redteam.py       # ✓ Phase 5c — categorized adversarial guard suite
 │   ├── trace_assertions.py        # ✓ Phase 5d — deterministic condition-dispatch engine
-│   ├── evaluators.py              # ✓ Phase 5d — quality/trace/turns/plan-approved evaluators
-│   ├── models.py                  # ✓ Phase 5d — ExpectedOutput + provisional RubricJudgeVerdict
+│   ├── evaluators.py              # ✓ Phase 5d/5b — quality (QualityVerdict)/trace/turns/plan-approved evaluators
+│   ├── models.py                  # ✓ Phase 5d/5b — ExpectedOutput + QualityVerdict
 │   ├── run_experiment.py          # ✓ Phase 5d — HTTP-driven experiment runner
 │   ├── create_dataset.py          # ✓ Phase 5d — optional Langfuse dataset sync
 │   ├── configs/
-│   │   ├── exp_baseline.yaml
-│   │   ├── node_eval.yaml         # provisional — Phase 5e will define the authoritative schema
-│   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions
+│   │   ├── exp_baseline.yaml      # type: experiment
+│   │   ├── guardrail_redteam.yaml # type: guardrail_redteam
+│   │   ├── node_eval.yaml         # type: node_eval
+│   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions (not runnable)
 │   └── datasets/
 │       ├── sample.yaml            # 5 synthetic prospect profiles (domain-mismatch caveat — see Phase 5d)
 │       └── node/                  # ✓ Phase 5a — one small dataset per node
@@ -841,7 +845,7 @@ Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
 
 ## Phases
 
-### Phase 5 — Evals (remaining: 5e unified entrypoint)
+### Phase 5 — Evals — all sub-phases implemented
 
 #### Context: why this phase was restructured
 
@@ -868,7 +872,7 @@ the same ideas later):
 
 Phase 5 was split into five sub-phases, ordered by leverage-per-effort. 5a (node-level
 eval tier), 5b (structured rubric judge), 5c (guardrail red-team suite) and 5d
-(harness-integrity fixes for `run_experiment.py`) have landed. 5e (unified entrypoint) remains.
+(harness-integrity fixes for `run_experiment.py`) and 5e (unified entrypoint) have all landed.
 
 ---
 
@@ -1058,15 +1062,32 @@ suite. Guard against **silent zero-coverage**: if `categories` in the config res
 an empty test list, exit 1 rather than reporting a clean pass (same "fail closed on empty
 selection" principle 5d already applied to `run_experiment.py`, applied here specifically).
 
-**Done when**: `uv run python evals/run.py guardrail_redteam` (once 5e's dispatcher
-exists; standalone `uv run python evals/guardrail_redteam.py` until then) runs ≥15 probes
+**Done when**: `uv run python evals/run.py guardrail_redteam` runs ≥15 probes
 across ≥4 categories, catches the homoglyph bypass and persona-hijack cases explicitly,
 and a deliberately broken guard (e.g. temporarily disable GLiGuard in a test harness)
 flips at least one case from PASS to FAIL.
 
 ---
 
-#### Phase 5e — Unified eval entrypoint (`evals/run.py`)
+#### Phase 5e — Unified eval entrypoint (`evals/run.py`) — ✓ implemented
+
+**As built.** `uv run python evals/run.py <name|path>` resolves `evals/configs/<name>.yaml`,
+reads `type:` and lazily imports the matching runner, so one runner's dependencies never
+load for another. Every runner exposes `run_from_config(path) -> int`. Exit codes: the
+runner's own (0 clean, 1 failures or empty selection), or 2 for an unknown name or a
+missing/unknown `type`. The error lists the runnable configs; `scoring_rubric.yaml` has
+no `type` and is excluded.
+- **node_eval needed a runner first.** `node_eval.yaml` was provisional and nothing
+  consumed it, so `evals/node_eval.py` was added. It runs each `NODE_TASK_REGISTRY` task
+  over its `datasets/node/` file against `deployment` (or `AGENT_LLM_MODEL`) and checks
+  every `expected_output` key (`min_plan_steps`, `must_reach_interrupt`,
+  `min_draft_length`, `min_claims`, `has_verdict`, `expected_status`). An unknown key fails
+  at load time. Each item gets PASS, FAIL or ERROR (raised, or dead-lettered). Results go to
+  `evals/.runs/node_eval/`. One `node_eval` config covers all nodes; to run a subset, copy
+  it and trim `nodes` (no per-node config files).
+- `exp_baseline.yaml` gained `type: experiment` (`ExperimentConfig.type`).
+- taskipy: `experiment`, `redteam` and the new `node-eval` all route through `run.py`.
+  Runner-specific flags (`guardrail_redteam.py --include-multiturn`) stay on the scripts.
 
 **Why**: once 5c lands there will be at least four separate eval scripts (`smoke_test.py`,
 node-level tasks, `guardrail_redteam.py`, `run_experiment.py`), each with its own CLI
@@ -1379,7 +1400,7 @@ This separation means Studio can inspect the graph topology without starting a P
 
 - **Phase 5b** ✓: eval judge validates against `QualityVerdict` and the critic against `CriticVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max (enforced by `check_rubric_matches_verdict`).
 - **Phase 5c** ✓: `guardrail_redteam` covers ≥4 categories including the homoglyph and persona-hijack cases; `tests/evals/test_guardrail_redteam.py` shows a disabled guard flips a case to FAIL.
-- **Phase 5e**: `evals/run.py` dispatches to all registered eval types by config name.
+- **Phase 5e** ✓: `evals/run.py` dispatches `exp_baseline`, `guardrail_redteam` and `node_eval` by name; an unknown name exits 2 listing the available configs (`tests/evals/test_run.py`).
 - **Phase 6**: `uv run pytest tests/test_prompts.py` passes; full `uv run pytest` suite unaffected; `uv run python -m app` + one curl research request round-trips correctly with externalized prompts.
 
 ---

@@ -303,8 +303,8 @@ uv run pytest tests/test_prompts.py
 # Node-level evals (Phase 5a) — one node factory at a time, no server/Postgres/MCP needed
 uv run pytest tests/evals/test_node_tasks.py
 
-# Eval harness unit tests (Phase 5d) — trace assertions, evaluators, dataset validation; zero network calls
-uv run pytest tests/evals/test_trace_assertions.py tests/evals/test_evaluators.py tests/evals/test_dataset_validation.py
+# Eval harness unit tests (Phase 5d/5e) — trace assertions, evaluators, dataset validation, run.py dispatch; zero network calls
+uv run pytest tests/evals/test_trace_assertions.py tests/evals/test_evaluators.py tests/evals/test_dataset_validation.py tests/evals/test_run.py
 
 # Guardrail red-team suite tests (Phase 5c) — runs the suite in-process against the real graph with a mock LLM
 uv run pytest tests/evals/test_guardrail_redteam.py
@@ -313,12 +313,20 @@ uv run pytest tests/evals/test_guardrail_redteam.py
 uv run python evals/smoke_test.py
 uv run python evals/smoke_test.py --base-url http://localhost:8010  # custom port
 
+# Every config-driven eval goes through one entrypoint (Phase 5e): evals/run.py <config-name>
+# resolves evals/configs/<name>.yaml and dispatches on its `type:` (experiment | guardrail_redteam |
+# node_eval). An unknown name exits 2 and lists the available configs.
+uv run python evals/run.py exp_baseline
+
+# Node-level evals against a real LLM (Phase 5e; only the LLM backend needed, no app/Postgres)
+uv run task node-eval
+uv run python evals/run.py node_eval
+
 # Guardrail red-team suite (Phase 5c; requires app + Postgres). PASS/FAIL/REVIEW/INFO/ERROR per probe;
 # exits 1 on any FAIL or ERROR. Multi-turn resume-guard probes are opt-in (they run the full pipeline).
-uv run task redteam
-uv run python evals/guardrail_redteam.py --include-multiturn
+uv run task redteam                                          # = evals/run.py guardrail_redteam
+uv run python evals/guardrail_redteam.py --include-multiturn  # script directly for its extra flags
 
 # HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional)
-uv run task experiment
-uv run python evals/run_experiment.py evals/configs/exp_baseline.yaml
+uv run task experiment                                       # = evals/run.py exp_baseline
 ```

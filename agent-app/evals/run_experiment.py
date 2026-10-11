@@ -46,7 +46,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import yaml
@@ -85,6 +85,7 @@ class ExperimentVariant(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
+    type: Literal["experiment"] = "experiment"  # dispatch key for evals/run.py
     experiment_name: str
     dataset: str = "sample.yaml"  # resolved relative to evals/datasets/
     scoring_rubric: str = "scoring_rubric.yaml"  # resolved relative to evals/configs/
@@ -478,16 +479,18 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def run_from_config(path: Path) -> int:
+    """evals/run.py entry point: load, validate, run, return the exit code."""
     configure_logging()
+    cfg = ExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
+    return asyncio.run(run_experiment(cfg, str(path)))
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Run an HTTP-driven eval experiment against agent-app.")
     parser.add_argument("config", help="Path to an experiment config YAML (e.g. evals/configs/exp_baseline.yaml)")
     args = parser.parse_args()
-
-    raw = yaml.safe_load(Path(args.config).read_text())
-    cfg = ExperimentConfig.model_validate(raw)
-    exit_code = asyncio.run(run_experiment(cfg, args.config))
-    sys.exit(exit_code)
+    sys.exit(run_from_config(Path(args.config)))
 
 
 if __name__ == "__main__":

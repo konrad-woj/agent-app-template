@@ -79,8 +79,9 @@ test-cov = { cmd = "pytest --cov=app --cov-report=term-missing", help = "Run tes
 audit = { cmd = "pip-audit", help = "Scan dependencies for known CVEs" }
 mcp = { cmd = "uvicorn app.mcp.server:mcp --host 0.0.0.0 --port 8001", help = "Run the MCP tool server" }
 app = { cmd = "uvicorn app.main:app --reload", help = "Run the FastAPI app with auto-reload" }
-redteam = { cmd = "python evals/guardrail_redteam.py evals/configs/guardrail_redteam.yaml", help = "Run the categorized guardrail red-team suite against a live agent-app server (requires app + Postgres)" }
-experiment = { cmd = "python evals/run_experiment.py evals/configs/exp_baseline.yaml", help = "Run the HTTP-driven eval experiment against a live agent-app server (requires app + Postgres)" }
+redteam = { cmd = "python evals/run.py guardrail_redteam", help = "Run the categorized guardrail red-team suite against a live agent-app server (requires app + Postgres)" }
+node-eval = { cmd = "python evals/run.py node_eval", help = "Run per-node quality checks against the configured LLM (no app server or Postgres needed)" }
+experiment = { cmd = "python evals/run.py exp_baseline", help = "Run the HTTP-driven eval experiment against a live agent-app server (requires app + Postgres)" }
 
 [build-system]
 requires = ["hatchling"]

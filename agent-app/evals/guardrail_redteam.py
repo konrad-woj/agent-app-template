@@ -556,6 +556,11 @@ def run(cfg: RedteamConfig, client: httpx.Client | None = None, save: bool = Tru
     return 1 if counts[Verdict.FAIL] or counts[Verdict.ERROR] else 0
 
 
+def run_from_config(path: Path) -> int:
+    """evals/run.py entry point."""
+    return run(load_config(path))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Categorized adversarial guardrail suite for agent-app")
     parser.add_argument("config", nargs="?", default=str(_DEFAULT_CONFIG), help="Path to a guardrail_redteam YAML")
