@@ -1,5 +1,7 @@
 """Tests for the MCP server using in-process fastmcp Client (no network required)."""
 
+import socket
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -8,6 +10,16 @@ from fastmcp import Client
 
 from app.mcp.server import fact_check, fetch_url, mcp, web_search
 from app.mcp.ssrf import _validate_url
+
+# A public address (example.com's) so the SSRF DNS check passes without a real lookup.
+_PUBLIC_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns() -> Iterator[None]:
+    """Stub the SSRF guard's DNS lookup — HTTP is already mocked, DNS must be too."""
+    with patch("app.mcp.ssrf.socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO):
+        yield
 
 
 class TestMcpSchema:
