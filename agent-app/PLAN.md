@@ -20,9 +20,9 @@
 - [MCP Server Startup](#mcp-server-startup)
 - [Key API Endpoints](#key-api-endpoints)
 - [Phases](#phases)
-  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5c-guardrail-red-team-suite-5e-unified-entrypoint)
+  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5e-unified-entrypoint)
     - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence---implemented)
-    - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite)
+    - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite---implemented)
     - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy)
   - [Phase 6 — Prompt Externalization (i18n-ready)](#phase-6--prompt-externalization-i18n-ready---implemented)
 - [Dependencies](#dependencies)
@@ -841,7 +841,7 @@ Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
 
 ## Phases
 
-### Phase 5 — Evals (remaining: 5c guardrail red-team suite, 5e unified entrypoint)
+### Phase 5 — Evals (remaining: 5e unified entrypoint)
 
 #### Context: why this phase was restructured
 
@@ -867,8 +867,8 @@ the same ideas later):
   ergonomics, not a correctness practice. Still adopted (5e) but labelled as a convention.
 
 Phase 5 was split into five sub-phases, ordered by leverage-per-effort. 5a (node-level
-eval tier), 5b (structured rubric judge) and 5d (harness-integrity fixes for
-`run_experiment.py`) have landed. The remaining sub-phases — 5c, 5e — can land in any order.
+eval tier), 5b (structured rubric judge), 5c (guardrail red-team suite) and 5d
+(harness-integrity fixes for `run_experiment.py`) have landed. 5e (unified entrypoint) remains.
 
 ---
 
@@ -973,7 +973,33 @@ matches the new max score.
 
 ---
 
-#### Phase 5c — Categorized adversarial guardrail suite
+#### Phase 5c — Categorized adversarial guardrail suite — ✓ implemented
+
+**As built.** `evals/guardrail_redteam.py` + `evals/configs/guardrail_redteam.yaml`
+(`uv run task redteam`). 22 single-turn probes across INPUT_VALIDATION, PROMPT_INJECTION,
+PERSONA_HIJACK and MISSING_GUARDS, plus 5 opt-in multi-turn probes (every
+RESUME_GUARD_BYPASS case and the output PII-redaction probe). Results are written to
+`evals/.runs/guardrail_redteam/<timestamp>.json`. Exits 1 on any FAIL/ERROR or on an
+empty selection. Notes:
+- **The homoglyph bypass was real** and is fixed: `sanitize_user_text` now matches markers
+  on a canonical form of the text (NFKC, angle-bracket lookalikes such as `⟨ ‹ 〈 ᐸ` folded
+  to `<`, Unicode format characters dropped). That catches fullwidth `＜system＞`, tags split
+  by zero-width characters, and U+E0000 tag-character smuggling. It switches to the
+  canonical text only when a marker is found, so benign Unicode (`x²`, `ﬁ`, emoji ZWJ
+  sequences) reaches the model unchanged.
+- **Layer attribution**: the API doesn't expose sanitised text, so layer-1 probes are
+  marker-only. A message that is empty after sanitising is blocked with a "sanitiser"
+  `guard_reason`. A block from a later layer counts as FAIL, because layer 1 was bypassed.
+- **Persona hijack** cases use a `validate_fn`: PASS if blocked, FAIL if any system prompt's
+  first line (read from `app/prompts/en`) or an injected canary shows up in the plan or
+  answer, otherwise REVIEW.
+- **"Broken guard flips PASS → FAIL"** is a pytest check (`tests/evals/test_guardrail_redteam.py`).
+  It runs the suite against the real compiled graph and router, with a mock LLM and an
+  in-memory checkpointer. Swapping the stub GLiGuard for `_NullGuard` flips
+  `pi_ignore_previous_instructions` from PASS to FAIL. Turning off the sanitiser's Unicode
+  folding flips `pi_fullwidth_homoglyph_tags` the same way.
+- **Not yet run against a live GLiGuard model + LLM.** Whether GLiGuard itself catches the
+  persona-hijack class is exactly what this suite answers on a real deployment.
 
 **Why**: `evals/smoke_test.py` today exercises exactly one probe per guard layer
 (`test_guard_layer1/2/3` — one regex case, one injection case, one off-topic case). A
@@ -1352,7 +1378,7 @@ This separation means Studio can inspect the graph topology without starting a P
 ## Verification Per Phase
 
 - **Phase 5b** ✓: eval judge validates against `QualityVerdict` and the critic against `CriticVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max (enforced by `check_rubric_matches_verdict`).
-- **Phase 5c**: `guardrail_redteam` run covers ≥4 categories including the homoglyph and persona-hijack cases.
+- **Phase 5c** ✓: `guardrail_redteam` covers ≥4 categories including the homoglyph and persona-hijack cases; `tests/evals/test_guardrail_redteam.py` shows a disabled guard flips a case to FAIL.
 - **Phase 5e**: `evals/run.py` dispatches to all registered eval types by config name.
 - **Phase 6**: `uv run pytest tests/test_prompts.py` passes; full `uv run pytest` suite unaffected; `uv run python -m app` + one curl research request round-trips correctly with externalized prompts.
 

@@ -306,9 +306,17 @@ uv run pytest tests/evals/test_node_tasks.py
 # Eval harness unit tests (Phase 5d) — trace assertions, evaluators, dataset validation; zero network calls
 uv run pytest tests/evals/test_trace_assertions.py tests/evals/test_evaluators.py tests/evals/test_dataset_validation.py
 
+# Guardrail red-team suite tests (Phase 5c) — runs the suite in-process against the real graph with a mock LLM
+uv run pytest tests/evals/test_guardrail_redteam.py
+
 # Smoke test (requires app + Postgres; LLM-dependent tests auto-skip if unreachable)
 uv run python evals/smoke_test.py
 uv run python evals/smoke_test.py --base-url http://localhost:8010  # custom port
+
+# Guardrail red-team suite (Phase 5c; requires app + Postgres). PASS/FAIL/REVIEW/INFO/ERROR per probe;
+# exits 1 on any FAIL or ERROR. Multi-turn resume-guard probes are opt-in (they run the full pipeline).
+uv run task redteam
+uv run python evals/guardrail_redteam.py --include-multiturn
 
 # HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional)
 uv run task experiment
