@@ -8,6 +8,7 @@ Raises:
 """
 
 import re
+import unicodedata
 
 # XML-like injection markers commonly used to hijack system prompts.
 _XML_INJECTION_PATTERN = re.compile(
@@ -25,6 +26,35 @@ _TOOL_CALL_PATTERN = re.compile(
 _REPEATED_NEWLINES = re.compile(r"\n{3,}")
 
 _MAX_LENGTH = 4096  # Hard ceiling matching ChatRequest.message max_length
+
+# Angle-bracket lookalikes that NFKC leaves alone but a model still reads as "<" / ">".
+# (Fullwidth ＜＞ and small-form ﹤﹥ are already folded by NFKC.)
+_ANGLE_LOOKALIKES = str.maketrans(
+    {
+        "\u2039": "<",  # ‹ single left-pointing angle quotation mark
+        "\u203a": ">",  # ›
+        "\u2329": "<",  # 〈 left-pointing angle bracket
+        "\u232a": ">",  # 〉
+        "\u27e8": "<",  # ⟨ mathematical left angle bracket
+        "\u27e9": ">",  # ⟩
+        "\u3008": "<",  # 〈 CJK left angle bracket
+        "\u3009": ">",  # 〉
+        "\u02c2": "<",  # ˂ modifier letter left arrowhead
+        "\u02c3": ">",  # ˃
+        "\u1438": "<",  # ᐸ Canadian syllabics pa
+        "\u1433": ">",  # ᐳ Canadian syllabics po
+    }
+)
+
+
+def _canonical(text: str) -> str:
+    """Fold text to what a reader (or model) sees: NFKC, angle lookalikes → ASCII, no invisible chars.
+
+    Drops Unicode format characters (category Cf): zero-width spaces/joiners,
+    bidi controls, and the U+E0000 "tag" block used for invisible-text smuggling.
+    """
+    folded = unicodedata.normalize("NFKC", text).translate(_ANGLE_LOOKALIKES)
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
 
 
 def sanitize_user_text(text: str) -> str:
@@ -52,6 +82,13 @@ def sanitize_user_text(text: str) -> str:
         raise ValueError(f"Input exceeds maximum length of {_MAX_LENGTH} characters.")
 
     cleaned = text.replace("\x00", "")
+    # Match markers on the canonical form so fullwidth (＜system＞) or zero-width-split
+    # (<sys\u200btem>) variants can't slip past the ASCII regexes. Switch to the
+    # canonical text only when it contains a marker, so benign input (x², ﬁ, emoji
+    # ZWJ sequences) reaches the model verbatim.
+    canonical = _canonical(cleaned)
+    if _XML_INJECTION_PATTERN.search(canonical) or _TOOL_CALL_PATTERN.search(canonical):
+        cleaned = canonical
     cleaned = _XML_INJECTION_PATTERN.sub("", cleaned)
     cleaned = _TOOL_CALL_PATTERN.sub("", cleaned)
     cleaned = _REPEATED_NEWLINES.sub("\n\n", cleaned)
