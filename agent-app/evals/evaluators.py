@@ -4,8 +4,9 @@ Four evaluators, each returning a Langfuse `Evaluation` so they plug directly
 into `create_score()` when Langfuse is configured (see run_experiment.py):
 
   quality_score_evaluator    — LLM judge scores final_answer against
-                               quality_criteria (evals/configs/scoring_rubric.yaml).
-                               PROVISIONAL pre-Phase-5b — see run_quality_judge().
+                               quality_criteria (evals/configs/scoring_rubric.yaml)
+                               as a QualityVerdict; total and pass/fail are
+                               computed here from the rubric, not by the judge.
   trace_assertion_evaluator  — deterministic checks against checkpoint history +
                                final state (evals/trace_assertions.py). No LLM call.
   turns_to_complete_evaluator — how many /v1/chat turns the run took.
@@ -15,8 +16,8 @@ into `create_score()` when Langfuse is configured (see run_experiment.py):
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import SystemMessage
@@ -26,21 +27,13 @@ from logger import get_logger
 
 from app.exceptions import LLMError
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm, llm_invoke_with_retry, parse_structured
-from evals.models import RubricJudgeVerdict
+from app.graph.nodes.subgraphs._rubric_models import criterion_verdicts, low_confidence_criteria, max_score_of
+from evals.models import QualityVerdict
 from evals.trace_assertions import evaluate_trace_assertions
 
 logger = get_logger(__name__)
 
 _JUDGE_CONFIG: RunnableConfig = {"configurable": {"thread_id": "quality-judge"}}
-
-# Judge models commonly wrap JSON in a ```json ... ``` fence despite "JSON only" instructions;
-# strip it before validation so a formatting quirk isn't conflated with a genuinely bad answer.
-_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
-
-
-def _strip_code_fences(text: str) -> str:
-    match = _CODE_FENCE_RE.match(text.strip())
-    return match.group(1) if match else text
 
 
 def turns_to_complete_evaluator(*, output: dict | None, expected_output: Any = None, **kwargs: Any) -> Evaluation:
@@ -100,10 +93,67 @@ def make_trace_assertion_evaluator(assertions: list[dict]) -> Callable:
     return evaluator
 
 
+def check_rubric_matches_verdict(criteria: list[dict]) -> None:
+    """Fail loudly if scoring_rubric.yaml and QualityVerdict disagree.
+
+    The criterion ids and each max_score must match QualityVerdict's fields and
+    their scale (4 or 2). Called at config-load time so a hand-edited rubric
+    can't silently score against a schema it no longer describes.
+
+    Raises:
+        ValueError: listing every mismatch.
+    """
+    expected = {
+        name: max_score_of(field.annotation)  # type: ignore[arg-type]
+        for name, field in QualityVerdict.model_fields.items()
+        if name != "summary"
+    }
+    actual = {c["id"]: c["max_score"] for c in criteria}
+    problems = [f"missing from rubric: {k}" for k in expected.keys() - actual.keys()]
+    problems += [f"not in QualityVerdict: {k}" for k in actual.keys() - expected.keys()]
+    problems += [
+        f"{k}: rubric max_score={actual[k]}, QualityVerdict scale is 0-{expected[k]}"
+        for k in expected.keys() & actual.keys()
+        if actual[k] != expected[k]
+    ]
+    if problems:
+        raise ValueError(
+            "scoring_rubric.yaml does not match evals.models.QualityVerdict: " + "; ".join(sorted(problems))
+        )
+
+
+@dataclass(frozen=True)
+class RubricScore:
+    total: int
+    max_total: int
+    passed: bool
+    below_minimum: list[str]  # criterion ids under their per_criterion_minimum
+    low_confidence: list[str]  # criterion ids the judge flagged — needs a human read
+
+
+def score_verdict(verdict: QualityVerdict, criteria: list[dict], minimum_total: int) -> RubricScore:
+    """Apply the rubric's pass_policy to a verdict. Pure — no LLM call."""
+    scores = {name: v.score for name, v in criterion_verdicts(verdict).items()}
+    total = sum(scores.values())
+    below = [c["id"] for c in criteria if scores[c["id"]] < c.get("per_criterion_minimum", 0)]
+    return RubricScore(
+        total=total,
+        max_total=sum(c["max_score"] for c in criteria),
+        passed=not below and total >= minimum_total,
+        below_minimum=below,
+        low_confidence=low_confidence_criteria(verdict),
+    )
+
+
 def _build_rubric_prompt(question: str, final_answer: str, criteria: list[dict]) -> str:
     criteria_text = "\n\n".join(
-        f"- {c['id']} ({c['name']}, max_score={c['max_score']}): {c['description'].strip()}\n"
+        f"- {c['id']} ({c['name']}, score 0-{c['max_score']}): {c['description'].strip()}\n"
         + "\n".join(f"    {score}: {desc}" for score, desc in c["scoring_guide"].items())
+        for c in criteria
+    )
+    shape = ", ".join(
+        f'"{c["id"]}": {{"reasoning": "...", "score": 0-{c["max_score"]}, "confidence": "high" | "low", '
+        f'"reason": "<one line>"}}'
         for c in criteria
     )
     return f"""You are scoring a research assistant's answer against a rubric.
@@ -116,8 +166,10 @@ Answer:
 Criteria:
 {criteria_text}
 
-Respond with JSON only, matching this exact shape:
-{{"scores": {{"<criterion_id>": {{"score": int, "reason": "<one sentence>"}}, ...}}, "total": int, "passed": bool, "summary": "<one sentence>"}}
+For each criterion, first write your reasoning (point at the parts of the answer that justify the score), then the score, then your confidence: "low" if you cannot judge it reliably, otherwise "high".
+
+Respond with JSON only, in exactly this shape and key order:
+{{{shape}, "summary": "<one sentence>"}}
 Do not include any other text."""
 
 
@@ -126,15 +178,15 @@ async def run_quality_judge(
     final_answer: str,
     criteria: list[dict],
     judge_model: str | None,
-) -> RubricJudgeVerdict | None:
+) -> QualityVerdict | None:
     """Ask an LLM judge to score final_answer against quality_criteria.
 
-    PROVISIONAL — pre-Phase-5b: the judge is asked for freeform JSON matching
-    RubricJudgeVerdict's shape via prompt instruction, not enforced structured
-    output, and there is no reasoning-before-score ordering or per-criterion
-    confidence flag yet. Phase 5b replaces this with CriterionVerdict /
-    HolisticCriterionVerdict models via the LLM client's structured-output
-    mechanism — see PLAN.md Phase 5b for the cited rationale.
+    The judge is prompted for a QualityVerdict (reasoning → score → confidence
+    per criterion) and its response is validated against that model. The
+    `ChatLiteLLM` client is used without `.with_structured_output()`: the
+    default local backends (llama.cpp / Ollama via LiteLLM) don't reliably
+    support tool-calling-based structured output, so the schema is enforced by
+    validation instead — see PLAN.md Phase 5b.
 
     Returns:
         The validated verdict, or None if the judge call failed or its response
@@ -150,16 +202,21 @@ async def run_quality_judge(
         logger.warning("quality_judge.call_failed", error=str(exc))
         return None
 
-    raw = _strip_code_fences(str(response.content))
-    verdict = parse_structured(raw, RubricJudgeVerdict)
+    raw = str(response.content)
+    verdict = parse_structured(raw, QualityVerdict)
     if verdict is None:
         logger.warning("quality_judge.unparseable_response", raw_length=len(raw))
     return verdict
 
 
-def make_quality_score_evaluator(criteria: list[dict], judge_model: str | None) -> Callable:
-    """Return an evaluator closing over `criteria`, loaded once at config-parse time."""
-    max_total = sum(c["max_score"] for c in criteria)
+def make_quality_score_evaluator(criteria: list[dict], judge_model: str | None, minimum_total: int) -> Callable:
+    """Return an evaluator closing over the rubric, checked once at config-parse time.
+
+    Value is total / max_total. Pass/fail, criteria under their minimum, and
+    criteria the judge flagged as low-confidence go in the comment and metadata
+    — a low-confidence verdict is surfaced for human review, never dropped.
+    """
+    check_rubric_matches_verdict(criteria)
 
     async def evaluator(*, output: dict | None, expected_output: Any = None, **kwargs: Any) -> Evaluation:
         _ = expected_output, kwargs
@@ -170,10 +227,23 @@ def make_quality_score_evaluator(criteria: list[dict], judge_model: str | None) 
         verdict = await run_quality_judge(out.get("question", ""), final_answer, criteria, judge_model)
         if verdict is None:
             return Evaluation(name="quality_score", value=0.0, comment="quality judge call failed", data_type="NUMERIC")
+        result = score_verdict(verdict, criteria, minimum_total)
+        parts = [f"{'PASS' if result.passed else 'FAIL'} {result.total}/{result.max_total}"]
+        if result.below_minimum:
+            parts.append("below minimum: " + ", ".join(result.below_minimum))
+        if result.low_confidence:
+            parts.append("REVIEW (low confidence): " + ", ".join(result.low_confidence))
+        parts.append(verdict.summary)
         return Evaluation(
             name="quality_score",
-            value=verdict.total / max_total if max_total else 0.0,
-            comment=verdict.summary,
+            value=result.total / result.max_total if result.max_total else 0.0,
+            comment=" | ".join(parts),
+            metadata={
+                "passed": result.passed,
+                "below_minimum": result.below_minimum,
+                "low_confidence": result.low_confidence,
+                "scores": {name: v.model_dump() for name, v in criterion_verdicts(verdict).items()},
+            },
             data_type="NUMERIC",
         )
 

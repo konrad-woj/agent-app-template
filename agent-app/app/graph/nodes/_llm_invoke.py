@@ -22,6 +22,7 @@ Node-level overrides:
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -160,14 +161,25 @@ async def llm_invoke_with_retry(
     raise last_err  # type: ignore[misc]
 
 
+# Models commonly wrap JSON in a ```json ... ``` fence despite "JSON only" instructions;
+# strip it before validation so a formatting quirk isn't conflated with a genuinely bad answer.
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    match = _CODE_FENCE_RE.match(text.strip())
+    return match.group(1) if match else text
+
+
 def parse_structured[T: BaseModel](raw: str, schema: type[T]) -> T | None:
     """Parse an LLM response's raw text content as `schema`; return None on parse failure.
 
     Every node that prompts an LLM for structured JSON follows the same
     call-then-parse shape; this factors out just the parsing step so each
-    caller keeps its own fallback behaviour for the None case.
+    caller keeps its own fallback behaviour for the None case. A surrounding
+    markdown code fence is stripped first.
     """
     try:
-        return schema.model_validate_json(raw)
+        return schema.model_validate_json(_strip_code_fences(raw))
     except (ValidationError, ValueError):
         return None

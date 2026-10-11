@@ -5,11 +5,17 @@ reflection_passed), so this subgraph must be invoked through a wrapper node
 in workflow.py that maps keys in both directions.
 
 Loop exit conditions (whichever comes first):
-  1. critic sets passed=True
+  1. critic's scores clear the pass policy (passed=True)
   2. reflection_attempts reaches MAX_REFLECTION_ATTEMPTS (settings.max_reflection_attempts)
 
 When the ceiling is hit, the best draft available is kept and reflection_passed
 propagates as False — the output guard still runs.
+
+The critic scores the draft per criterion (reasoning → score → confidence, see
+_rubric_models.py) and pass/fail is decided here in code from those scores — the
+LLM is never asked for the verdict or the total. Criteria the critic flags as
+low-confidence are returned in `low_confidence` so they surface for human
+review instead of disappearing into the pass/fail decision.
 
 Factory functions accept an LLM so tests can inject a mock.
 """
@@ -24,10 +30,17 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from logger import get_logger
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from app.config import settings
 from app.graph.nodes._llm_invoke import llm_invoke_with_retry, parse_structured
+from app.graph.nodes.subgraphs._rubric_models import (
+    CriterionVerdict,
+    HolisticCriterionVerdict,
+    criterion_verdicts,
+    low_confidence_criteria,
+    max_score_of,
+)
 from app.prompts.loader import load_system, render_human
 
 logger = get_logger(__name__)
@@ -37,20 +50,41 @@ _REFINER_PROMPT = load_system("reflection", "refiner")
 
 
 class ReflectionState(TypedDict):
+    question: str
     draft: str
     critique: str
     reflection_attempts: int
     passed: bool
+    low_confidence: list[str]  # criterion ids the latest critic pass was unsure about
 
 
-class _CriticResponse(BaseModel):
-    verdict: str
+class CriticVerdict(BaseModel):
+    """Critic output. 0–4 for criteria you can point at sentences for, 0–2 for holistic ones."""
+
+    relevance: CriterionVerdict
+    completeness: CriterionVerdict
+    accuracy: HolisticCriterionVerdict  # the critic has no sources; verify_subgraph checks facts
+    clarity: HolisticCriterionVerdict
     critique: str
 
-    @field_validator("verdict")
-    @classmethod
-    def normalise_verdict(cls, v: str) -> str:
-        return v.strip().lower()
+
+# Pass policy: every criterion at or above its minimum AND the total at or above
+# _MIN_TOTAL (out of 4+4+2+2 = 12). Mirrors the ~3/4 bar in evals/configs/scoring_rubric.yaml.
+_MIN_SCORES = {"relevance": 3, "completeness": 3, "accuracy": 1, "clarity": 1}
+_MIN_TOTAL = 9
+
+
+def _apply_pass_policy(verdict: CriticVerdict) -> tuple[bool, str]:
+    """Return (passed, critique). The critique lists each criterion below its minimum."""
+    scores = criterion_verdicts(verdict)
+    total = sum(v.score for v in scores.values())
+    below = {name: v for name, v in scores.items() if v.score < _MIN_SCORES[name]}
+    passed = not below and total >= _MIN_TOTAL
+    critique = verdict.critique
+    if below:
+        details = "\n".join(f"- {name} ({v.score}/{max_score_of(type(v))}): {v.reason}" for name, v in below.items())
+        critique = f"{critique}\n{details}"
+    return passed, critique
 
 
 def make_critic_node(llm: BaseChatModel) -> Callable:
@@ -62,22 +96,38 @@ def make_critic_node(llm: BaseChatModel) -> Callable:
         t0 = time.perf_counter()
         messages = [
             SystemMessage(content=_CRITIC_PROMPT),
-            HumanMessage(content=render_human("reflection", "critic", draft=state["draft"])),
+            HumanMessage(
+                content=render_human("reflection", "critic", question=state["question"], draft=state["draft"])
+            ),
         ]
         response = await llm_invoke_with_retry(llm, messages, config)
-        parsed = parse_structured(str(response.content), _CriticResponse)
+        raw = str(response.content)
+        parsed = parse_structured(raw, CriticVerdict)
         if parsed is not None:
-            passed = parsed.verdict == "pass"
-            critique = parsed.critique
+            passed, critique = _apply_pass_policy(parsed)
+            low_confidence = low_confidence_criteria(parsed)
+            scores = {name: v.score for name, v in criterion_verdicts(parsed).items()}
         else:
-            passed = True  # parse failure → treat as pass to avoid infinite loop
-            critique = "Could not parse critic response."
+            # Parse failure → treat as pass to avoid refining against a critique that
+            # doesn't exist. Logged as a warning: repeated hits mean the critic model
+            # can't follow the schema and the quality gate is effectively off.
+            logger.warning("critic.parse_failed", attempt=attempt, raw_length=len(raw))
+            passed, critique, low_confidence, scores = True, "Could not parse critic response.", [], {}
         duration_ms = round((time.perf_counter() - t0) * 1000)
-        logger.info("critic.complete", attempt=attempt, passed=passed, critique=critique, duration_ms=duration_ms)
+        logger.info(
+            "critic.complete",
+            attempt=attempt,
+            passed=passed,
+            scores=scores,
+            low_confidence=low_confidence,
+            critique=critique,
+            duration_ms=duration_ms,
+        )
         return {
             "critique": critique,
             "passed": passed,
             "reflection_attempts": attempt,
+            "low_confidence": low_confidence,
         }
 
     return critic_node

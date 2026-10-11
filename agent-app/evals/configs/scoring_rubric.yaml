@@ -4,16 +4,20 @@
 # TWO evaluation layers:
 #
 #   quality_criteria   — LLM-judge scores, consumed by evals/evaluators.py's
-#                        quality_score_evaluator (PROVISIONAL freeform-JSON judge,
-#                        pre-Phase-5b — see evals/evaluators.py:run_quality_judge).
-#                        NOT currently read by the Reflection critic subgraph
-#                        (app/graph/nodes/subgraphs/reflection.py) — that node has
-#                        its own simple pass/fail + one-sentence critique prompt,
-#                        unrelated to this file (checked directly against the
-#                        implementation, not assumed).
-#                        Each criterion returns a 0–max_score integer + a one-line
-#                        reason string.  Proposal passes when total >= pass_threshold
-#                        AND every per-criterion minimum is met.
+#                        quality_score_evaluator. The judge returns an
+#                        evals.models.QualityVerdict: per criterion, reasoning →
+#                        score → confidence → one-line reason. Criterion ids and
+#                        max_score values here MUST match QualityVerdict's fields
+#                        and scales (checked at load time by
+#                        evals.evaluators.check_rubric_matches_verdict).
+#                        NOT read by the Reflection critic subgraph
+#                        (app/graph/nodes/subgraphs/reflection.py) — that node
+#                        reviews research answers, so it scores its own criteria
+#                        (relevance/completeness/accuracy/clarity) with the same
+#                        per-criterion verdict models.
+#                        Proposal passes when total >= minimum_total AND every
+#                        per-criterion minimum is met — computed in code from the
+#                        scores, never taken from the judge.
 #
 #   trace_assertions   — Deterministic checks on the graph execution trace
 #                        (checkpoint history + final state).  These never call an
@@ -27,6 +31,13 @@
 # ---------------------------------------------------------------------------
 # Layer 1 — LLM quality criteria
 # ---------------------------------------------------------------------------
+#
+# Why 0–4 for some criteria and 0–2 for others (PLAN.md Phase 5b): use 0–4 when
+# the evidence is enumerable — you can point at sentences and count them
+# (stack_alignment, pain_point_coverage, specificity). Use 0–2 when the criterion
+# is inherently holistic (feasibility, risk_acknowledgment). Coarse-but-not-binary
+# scales give LLM judges the best agreement with humans; don't widen them.
+# Changing a max_score here also means changing evals/models.py:QualityVerdict.
 
 quality_criteria:
 
@@ -36,13 +47,14 @@ quality_criteria:
       The proposal references and integrates with the prospect's stated tech stack.
       Proposed additions are compatible with existing components; no incompatible
       technology is introduced without a migration path.
-    max_score: 3
+    max_score: 4
     scoring_guide:
       0: No mention of the prospect's stack; reads like a generic template.
       1: Mentions at least one stack component but proposes incompatible additions.
-      2: References most stack components; additions are compatible.
-      3: Deep integration specified for each layer; migration or adoption path given.
-    per_criterion_minimum: 2
+      2: References some stack components; additions are compatible but integration is not described.
+      3: References most stack components; additions are compatible and integration points are named.
+      4: Deep integration specified for each layer; migration or adoption path given.
+    per_criterion_minimum: 3
 
   - id: pain_point_coverage
     name: Pain Point Coverage
@@ -50,13 +62,14 @@ quality_criteria:
       Every pain point listed by the prospect is explicitly addressed with a
       concrete technical response.  Vague acknowledgement ("we can help with X")
       does not count — the proposal must explain HOW.
-    max_score: 3
+    max_score: 4
     scoring_guide:
       0: No pain points addressed.
       1: At least one pain point addressed; others ignored.
-      2: All pain points addressed but one or more only at a surface level.
-      3: All pain points addressed with specific technical mechanisms.
-    per_criterion_minimum: 2
+      2: Most pain points addressed; at least one ignored or only acknowledged.
+      3: All pain points addressed but one or more only at a surface level.
+      4: All pain points addressed with specific technical mechanisms.
+    per_criterion_minimum: 3
 
   - id: specificity
     name: Technical Specificity
@@ -64,13 +77,14 @@ quality_criteria:
       The proposal names specific technologies, libraries, APIs, or patterns
       (e.g. "pgvector for ANN search", "OR-Tools for VRP") rather than generic
       phrases ("use a machine learning model", "add an API layer").
-    max_score: 3
+    max_score: 4
     scoring_guide:
       0: Entirely generic; could apply to any company in any industry.
       1: One or two named technologies but rest is vague.
-      2: Most recommendations are specific; a few remain generic.
-      3: Every recommendation is specific and justified.
-    per_criterion_minimum: 2
+      2: About half the recommendations name a specific technology or pattern.
+      3: Most recommendations are specific; a few remain generic.
+      4: Every recommendation is specific and justified.
+    per_criterion_minimum: 3
 
   - id: feasibility
     name: Feasibility
@@ -99,16 +113,16 @@ quality_criteria:
 
 pass_policy:
   # Proposal accepted when total score AND all per-criterion minimums are met.
-  minimum_total: 10          # out of 13 maximum
+  minimum_total: 12          # out of 16 maximum (4+4+4+2+2) — same ~75% bar as the old 10/13
   # Per-criterion minimums are declared inline above (per_criterion_minimum field).
 
-  # Used by evals/evaluators.py:run_quality_judge (see note above — not the
-  # Reflection subgraph, which uses its own unrelated pass/fail prompt).
-  # The judge LLM must output a JSON object matching this schema:
-  #   { "scores": { "<criterion_id>": { "score": int, "reason": str }, … },
-  #     "total": int,
-  #     "passed": bool,
+  # The judge LLM outputs an evals.models.QualityVerdict:
+  #   { "<criterion_id>": { "reasoning": str, "score": int, "confidence": "high"|"low",
+  #                         "reason": str }, …,
   #     "summary": str }
+  # It is not asked for a total or a pass/fail; evals/evaluators.py:score_verdict
+  # derives both from the scores and this pass_policy. Criteria marked
+  # confidence="low" are reported for human review in the evaluator's comment.
 
 # ---------------------------------------------------------------------------
 # Layer 2 — Deterministic trace assertions

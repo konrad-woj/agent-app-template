@@ -82,6 +82,7 @@ def _agent_state(**overrides: Any) -> AgentState:
         "draft_answer": "",
         "reflection_attempts": 0,
         "reflection_passed": False,
+        "reflection_low_confidence": [],
         "final_answer": "",
         "status": "planning",
         "guard_reason": None,

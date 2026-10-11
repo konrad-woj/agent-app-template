@@ -70,7 +70,7 @@ If anything doesn't come up, check [Ports used](#ports-used) below for what shou
 | **Fan-out / Fan-in** | Inside `verify_subgraph` | `Send` API spawns parallel claim verifiers; `operator.add` reducer collects results |
 | **ReAct** | `react_researcher` | Model ↔ `ToolNode` loop; exits when model emits no `tool_calls` |
 | **Human-in-the-loop** | `plan_review` (plan generated + guarded by `planner`) | `interrupt()` pauses graph; resumed with `Command(resume=True/False)` |
-| **Reflection** | `reflection_subgraph` | Critic → Refiner loop until quality criteria are met |
+| **Reflection** | `reflection_subgraph` | Critic scores the draft per criterion (reasoning → score → confidence, 0–4 / 0–2 scales); pass/fail is computed from the scores in code; Refiner loops until it passes. Low-confidence criteria surface in `reflection_low_confidence` |
 | **MCP** | `react_researcher` (consumer) + `app/mcp/server.py` (server) | `fastmcp` exposes tools; `langchain-mcp-adapters` binds them to LangGraph |
 | **Guardrails** | `input_guard`, `resume_guard`, `output_guard` | Three-layer input check (regex → GLiGuard → LLM topic); resume message checked by dedicated node; two-layer output check (GLiGuard PII redaction → LLM grounding) |
 | **Dead letter** | `dead_letter` terminal node | Any unhandled node exception writes `DeadLetterInfo` to state and routes here instead of crashing |

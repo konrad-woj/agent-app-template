@@ -20,8 +20,8 @@
 - [MCP Server Startup](#mcp-server-startup)
 - [Key API Endpoints](#key-api-endpoints)
 - [Phases](#phases)
-  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5b-rubric-judge-schema-5c-guardrail-red-team-suite-5e-unified-entrypoint)
-    - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence)
+  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5c-guardrail-red-team-suite-5e-unified-entrypoint)
+    - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence---implemented)
     - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite)
     - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy)
   - [Phase 6 — Prompt Externalization (i18n-ready)](#phase-6--prompt-externalization-i18n-ready---implemented)
@@ -337,7 +337,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 ### Reflection (inside `reflection_subgraph`)
 
-The subgraph loops: `critic` scores the draft answer against criteria (relevance, completeness, grounding); if it fails, `refiner` improves the draft and the critic re-evaluates. The loop exits on quality pass **or when `reflection_attempts` reaches `MAX_REFLECTION_ATTEMPTS`** (default 5, configurable via `AGENT_MAX_REFLECTION_ATTEMPTS`). On ceiling hit the best draft is kept and `reflection_passed` is set to `False` — the output guard still runs.
+The subgraph loops: `critic` scores the draft answer per criterion (relevance and completeness 0–4, accuracy and clarity 0–2; reasoning → score → confidence — see Phase 5b), and pass/fail is computed from those scores in code; if it fails, `refiner` improves the draft and the critic re-evaluates. The loop exits on quality pass **or when `reflection_attempts` reaches `MAX_REFLECTION_ATTEMPTS`** (default 5, configurable via `AGENT_MAX_REFLECTION_ATTEMPTS`). On ceiling hit the best draft is kept and `reflection_passed` is set to `False` — the output guard still runs.
 
 `ReflectionState` uses short internal keys (`draft`, `passed`) that differ from `AgentState`
 (`draft_answer`, `reflection_passed`). Because LangGraph only auto-merges **matching** keys,
@@ -346,10 +346,12 @@ a wrapper node is required — there is no `input_schema`/`output_schema` shortc
 ```python
 # subgraphs/reflection.py — internal state
 class ReflectionState(TypedDict):
+    question: str
     draft: str
     critique: str
     reflection_attempts: int
     passed: bool
+    low_confidence: list[str]  # criteria the critic was unsure about (Phase 5b)
 
 
 MAX_REFLECTION_ATTEMPTS = settings.max_reflection_attempts  # default 5
@@ -367,10 +369,12 @@ reflection_subgraph = reflection_graph.compile()
 async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
     result = await reflection_subgraph.ainvoke(
         {
+            "question": get_last_human_text(state["messages"]),
             "draft": state["draft_answer"],
             "critique": "",
             "reflection_attempts": state["reflection_attempts"],
             "passed": False,
+            "low_confidence": [],
         },
         config,
     )
@@ -378,6 +382,7 @@ async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
         "final_answer": result["draft"],
         "reflection_passed": result["passed"],
         "reflection_attempts": result["reflection_attempts"],
+        "reflection_low_confidence": result["low_confidence"],
     }
 
 
@@ -836,7 +841,7 @@ Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
 
 ## Phases
 
-### Phase 5 — Evals (remaining: 5b rubric-judge schema, 5c guardrail red-team suite, 5e unified entrypoint)
+### Phase 5 — Evals (remaining: 5c guardrail red-team suite, 5e unified entrypoint)
 
 #### Context: why this phase was restructured
 
@@ -862,12 +867,35 @@ the same ideas later):
   ergonomics, not a correctness practice. Still adopted (5e) but labelled as a convention.
 
 Phase 5 was split into five sub-phases, ordered by leverage-per-effort. 5a (node-level
-eval tier) and 5d (harness-integrity fixes for `run_experiment.py`) have landed. The
-remaining sub-phases — 5b, 5c, 5e — can land in any order.
+eval tier), 5b (structured rubric judge) and 5d (harness-integrity fixes for
+`run_experiment.py`) have landed. The remaining sub-phases — 5c, 5e — can land in any order.
 
 ---
 
-#### Phase 5b — Structured rubric-judge schema (reasoning → score → confidence)
+#### Phase 5b — Structured rubric-judge schema (reasoning → score → confidence) — ✓ implemented
+
+**As built — deviation from the deliverables below.** The deliverables said to make the
+Reflection critic score against `QualityVerdict`. That rubric's criteria (stack_alignment,
+pain_point_coverage, …) describe a pre-sales proposal, while the critic reviews answers to
+general research questions, so 5b was split instead:
+- **Eval judge** (`evals/evaluators.py`): returns `evals.models.QualityVerdict` (the five
+  rubric criteria, 0–4 / 0–2). The judge is no longer asked for `total`/`passed`;
+  `score_verdict()` derives both from the scores and `pass_policy`.
+  `check_rubric_matches_verdict()` fails at load time if `scoring_rubric.yaml` and
+  `QualityVerdict` drift apart. Low-confidence criteria go into the score comment and
+  metadata (uploaded to Langfuse and written to the local report).
+- **Reflection critic** (`app/graph/nodes/subgraphs/reflection.py`): returns its own
+  `CriticVerdict` — relevance (0–4), completeness (0–4), accuracy (0–2), clarity (0–2) —
+  built from the same shared models in `app/graph/nodes/subgraphs/_rubric_models.py`.
+  The critic now receives the question, not just the draft. Pass/fail is computed in code
+  (every criterion at its minimum and total ≥ 9/12). Criteria below their minimum are
+  appended to the critique for the refiner. Low-confidence criteria propagate to
+  `AgentState.reflection_low_confidence`.
+- **Structured-output mechanism**: parse-and-validate against the Pydantic model, not
+  `.with_structured_output()` — the default local backends (llama.cpp / Ollama via LiteLLM)
+  don't reliably support tool-calling-based structured output. `parse_structured` now strips
+  a markdown code fence first; before this, a fenced critic response failed to parse and was
+  silently treated as a pass.
 
 **Why**: the current `scoring_rubric.yaml` `quality_criteria` block asks the critic LLM to
 free-form a JSON object matching a documented (but unenforced) shape. Two changes, both
@@ -1323,7 +1351,7 @@ This separation means Studio can inspect the graph topology without starting a P
 
 ## Verification Per Phase
 
-- **Phase 5b**: critic LLM call validates against `QualityVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max.
+- **Phase 5b** ✓: eval judge validates against `QualityVerdict` and the critic against `CriticVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max (enforced by `check_rubric_matches_verdict`).
 - **Phase 5c**: `guardrail_redteam` run covers ≥4 categories including the homoglyph and persona-hijack cases.
 - **Phase 5e**: `evals/run.py` dispatches to all registered eval types by config name.
 - **Phase 6**: `uv run pytest tests/test_prompts.py` passes; full `uv run pytest` suite unaffected; `uv run python -m app` + one curl research request round-trips correctly with externalized prompts.

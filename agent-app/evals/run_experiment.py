@@ -316,6 +316,7 @@ def _upload_scores(langfuse: Langfuse, thread_id: str, evaluations: list) -> Non
                 value=ev.value,
                 data_type=ev.data_type or "NUMERIC",
                 comment=ev.comment,
+                metadata=ev.metadata,
             )
         except Exception as exc:  # pragma: no cover - defensive; create_score itself rarely raises
             logger.warning("langfuse.score_upload_failed", thread_id=thread_id, name=ev.name, error=str(exc))
@@ -375,7 +376,10 @@ async def _run_variant(
             return {
                 "item_id": item.get("id"),
                 "output": output,
-                "evaluations": [{"name": e.name, "value": e.value, "comment": e.comment} for e in evaluations],
+                "evaluations": [
+                    {"name": e.name, "value": e.value, "comment": e.comment, "metadata": e.metadata}
+                    for e in evaluations
+                ],
             }
 
         item_results = await asyncio.gather(*(_run_one(item) for item in items))
@@ -404,7 +408,9 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
 
     rubric = _load_scoring_rubric(cfg.scoring_rubric)
     evaluators = [
-        make_quality_score_evaluator(rubric["quality_criteria"], cfg.judge_model),
+        make_quality_score_evaluator(
+            rubric["quality_criteria"], cfg.judge_model, rubric["pass_policy"]["minimum_total"]
+        ),
         make_trace_assertion_evaluator(rubric["trace_assertions"]),
         turns_to_complete_evaluator,
         plan_approved_evaluator,

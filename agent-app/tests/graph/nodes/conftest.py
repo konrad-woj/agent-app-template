@@ -35,6 +35,7 @@ def base_state(
         "draft_answer": draft_answer,
         "reflection_attempts": reflection_attempts,
         "reflection_passed": reflection_passed,
+        "reflection_low_confidence": [],
         "final_answer": final_answer,
         "status": status,
         "guard_reason": guard_reason,

@@ -33,7 +33,7 @@ _SYSTEM_PROMPT_CASES = [
 _HUMAN_TEMPLATE_CASES = [
     ("planner", "plan_guard", {"plan": "X"}, "Research plan:\nX"),
     ("writer", "draft", {"question": "Q", "plan_summary": "P"}, "Question: Q\n\nResearch plan:\nP"),
-    ("reflection", "critic", {"draft": "D"}, "Draft answer:\nD"),
+    ("reflection", "critic", {"question": "Q", "draft": "D"}, "Question:\nQ\n\nDraft answer:\nD"),
     ("reflection", "refiner", {"draft": "D", "critique": "C"}, "Draft:\nD\n\nCritique:\nC"),
     ("verification", "verify", {"claim": "C", "evidence": "E"}, "Claim: C\n\nEvidence:\nE"),
 ]

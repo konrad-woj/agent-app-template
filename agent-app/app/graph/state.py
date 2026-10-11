@@ -38,6 +38,7 @@ class AgentState(TypedDict):
     draft_answer: str  # writer output before reflection
     reflection_attempts: int
     reflection_passed: bool
+    reflection_low_confidence: list[str]  # criteria the final critic pass flagged for human review
     final_answer: str  # output_guard-approved answer returned to the caller
     # Lifecycle: "planning" → "researching" → "writing" → "verifying" →
     #            "reflecting" → "done" | "aborted" | "blocked" | "dead_lettered"

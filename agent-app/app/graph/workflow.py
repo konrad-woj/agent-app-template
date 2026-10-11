@@ -30,6 +30,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.config import settings
 from app.graph.nodes._dead_letter import after, dead_letter_node, with_dead_letter
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm
+from app.graph.nodes._messages import get_last_human_text
 from app.graph.nodes.input_guard import make_input_guard_node
 from app.graph.nodes.output_guard import make_output_guard_node
 from app.graph.nodes.planner import make_plan_review_node, make_planner_node
@@ -124,16 +125,19 @@ def _make_run_reflection(llm: BaseChatModel) -> Callable:
     @with_dead_letter("reflection_subgraph")
     async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
         reflection_input: ReflectionState = {
+            "question": get_last_human_text(state["messages"]),
             "draft": state.get("draft_answer", ""),
             "critique": "",
             "reflection_attempts": state.get("reflection_attempts", 0),
             "passed": False,
+            "low_confidence": [],
         }
         result = await compiled.ainvoke(reflection_input, config)
         return {
             "final_answer": result["draft"],
             "reflection_passed": result["passed"],
             "reflection_attempts": result["reflection_attempts"],
+            "reflection_low_confidence": result["low_confidence"],
             "status": "done" if result["passed"] else "reflecting",
         }
 
