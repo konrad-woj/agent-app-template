@@ -34,6 +34,7 @@ def _base_state(
 ) -> AgentState:
     return {
         "messages": [HumanMessage(content="test")],
+        "question": "",
         "plan": [],
         "plan_approved": False,
         "claims": [],

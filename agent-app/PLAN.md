@@ -369,7 +369,7 @@ reflection_subgraph = reflection_graph.compile()
 async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
     result = await reflection_subgraph.ainvoke(
         {
-            "question": get_last_human_text(state["messages"]),
+            "question": get_turn_question(state),
             "draft": state["draft_answer"],
             "critique": "",
             "reflection_attempts": state["reflection_attempts"],

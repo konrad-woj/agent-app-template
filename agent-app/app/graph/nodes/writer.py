@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from app.graph.nodes._dead_letter import with_dead_letter
 from app.graph.nodes._llm_invoke import llm_invoke_with_retry, parse_structured
-from app.graph.nodes._messages import get_last_human_text
+from app.graph.nodes._messages import get_turn_question
 from app.prompts.loader import load_system, render_human
 
 logger = get_logger(__name__)
@@ -42,7 +42,7 @@ def make_writer_node(llm: BaseChatModel) -> Callable:
 
     @with_dead_letter("writer")
     async def writer(state: "AgentState", config: RunnableConfig) -> dict:  # type: ignore[name-defined]  # noqa: F821
-        question = get_last_human_text(state["messages"])
+        question = get_turn_question(state)
         plan: list[str] = state.get("plan", [])  # type: ignore[assignment]
         logger.info(
             "writer.inputs",

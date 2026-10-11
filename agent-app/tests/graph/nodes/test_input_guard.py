@@ -120,6 +120,7 @@ class TestInputGuardMessageReplacement:
         assert isinstance(replacement, HumanMessage)
         assert "<system>" not in replacement.content
         assert "quantum computing" in replacement.content
+        assert result["question"] == replacement.content  # downstream nodes read the sanitised text
 
     async def test_clean_text_leaves_messages_untouched(self) -> None:
         gliguard = make_mock_gliguard()

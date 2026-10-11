@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     # add_messages reducer: nodes append to this list by default, and may
     # replace/delete a specific message via RemoveMessage(id=...).
     messages: Annotated[list[AnyMessage], add_messages]
+    question: str  # this turn's sanitised question, set by input_guard (read via get_turn_question)
     plan: list[str]  # planner output; each entry is one research step
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer

@@ -74,6 +74,7 @@ def _agent_state(**overrides: Any) -> AgentState:
     """Build a minimal AgentState, defaulting every field a node might read via .get()."""
     state: AgentState = {
         "messages": [],
+        "question": "",
         "plan": [],
         "plan_approved": False,
         "claims": [],
