@@ -241,7 +241,7 @@ def compile_graph(
 ) -> CompiledStateGraph:
     """Compile the graph with a Postgres checkpointer for production use.
 
-    Builds one LLM per unique NodeLLMConfig entry; nodes absent from
+    Builds one LLM per node_llm_configs key; nodes absent from
     node_llm_configs share the default LLM instance.
 
     Args:

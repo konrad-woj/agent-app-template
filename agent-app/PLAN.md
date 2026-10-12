@@ -36,7 +36,7 @@
 
 ## Context
 
-`agent-lib` already has a skeleton with Postgres checkpointing and time-travel tests. The goal is to create `agent-app/` as a best-practice, educational FastAPI service that sits alongside `churn-app/` and shows the full LangGraph feature set: time-travel, interrupts, async nodes, subgraphs, and SSE token streaming. LiteLLM + Ollama is the default LLM backend. The project informs structural patterns only (node factories, interrupt/resume flow, eval framework shape) — all business logic is original.
+`agent-lib` already has a skeleton with Postgres checkpointing and time-travel tests. The goal is to create `agent-app/` as a best-practice, educational FastAPI service that sits alongside `churn-app/` and shows the full LangGraph feature set: time-travel, interrupts, async nodes, subgraphs, and SSE token streaming. LiteLLM against a local Unsloth Studio / llama.cpp server is the default LLM backend. The project informs structural patterns only (node factories, interrupt/resume flow, eval framework shape) — all business logic is original.
 
 **Quality bar**: Production-grade code (type hints everywhere, async-first, structured logging via the custom `logger` package (`get_logger(__name__)` + `configure_logging()` called once in lifespan — never stdlib `logging`), proper error hierarchy, Pydantic validation at boundaries) with deliberately simple business logic — the research assistant domain is a vehicle to demonstrate LangGraph features cleanly.
 
@@ -85,9 +85,13 @@ agent-app/
 │   │   ├── node_eval.yaml         # type: node_eval
 │   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions (not runnable)
 │   └── datasets/
-│       ├── sample.yaml            # 5 synthetic prospect profiles (domain-mismatch caveat — see Phase 5d)
+│       ├── sample.yaml            # 5 synthetic prospect profiles (pre-sales domain, not research questions)
 │       └── node/                  # ✓ Phase 5a — one small dataset per node
 ├── tests/
+│   ├── evals/
+│   ├── graph/
+│   ├── guards/
+│   └── mcp/
 └── app/
     ├── __init__.py
     ├── __main__.py            # uv run python -m app
@@ -96,12 +100,21 @@ agent-app/
     ├── models.py              # Request/response schemas
     ├── dependencies.py        # get_graph() FastAPI dependency
     ├── exceptions.py          # LLMError hierarchy
-    ├── routers.py             # /v1/chat, /v1/chat/stream, /v1/threads/{id}/history, /v1/threads/{id}/replay
+    ├── auth.py                # verify_api_key dependency (enforced when AGENT_API_KEY is set)
+    ├── rate_limit.py          # slowapi limiter (enabled when AGENT_RATE_LIMIT is set)
+    ├── routers.py             # /v1/chat, /v1/chat/stream, /v1/threads/{id}/history, /v1/threads/{id}/replay, /health, /ready, /metrics/dead-letter
+    ├── guards/
+    │   ├── __init__.py
+    │   └── gliguard.py        # GLiGuardClient singleton + concurrency semaphore
+    ├── prompts/
+    │   ├── __init__.py
+    │   ├── loader.py          # ✓ Phase 6 — load_system / render_human / load_text
+    │   └── en/                # one directory per node; see Phase 6
     ├── mcp/
     │   ├── __init__.py
-    │   ├── __main__.py        # uv run python -m app.mcp.server → uvicorn app.mcp.server:mcp
-    │   └── server.py          # fastmcp server; web_search, fetch_url, fact_check tools
-    │                          # _validate_url() SSRF guard: literal IP + private hostname check
+    │   ├── __main__.py        # uv run python -m app.mcp
+    │   ├── server.py          # fastmcp server; web_search, fetch_url, fact_check tools
+    │   └── ssrf.py            # _validate_url() SSRF guard: literal IP + private hostname check
     └── graph/
         ├── __init__.py
         ├── state.py           # AgentState TypedDict
@@ -109,15 +122,21 @@ agent-app/
         ├── mcp_client.py      # fastmcp client factory; binds MCP tools for LangGraph
         └── nodes/
             ├── __init__.py
-            ├── _llm_invoke.py         # Centralised async LLM wrapper + error translation + build_llm() factory
+            ├── _llm_invoke.py         # Centralised async LLM wrapper + error translation + build_llm() + parse_structured()
             ├── _dead_letter.py        # DeadLetterInfo TypedDict + with_dead_letter decorator + dead_letter_node
+            ├── _guard_layers.py       # run_sanitize_and_injection_check(): layers 1–2 shared by input/resume guards
+            ├── _guard_verdict.py      # GuardVerdict model for LLM topic / plan checks
+            ├── _messages.py           # get_turn_question() and last-human-message helpers
+            ├── _prompt_utils.py       # sanitize_user_text(): layer-1 regex sanitiser with Unicode folding
             ├── input_guard.py         # GUARDRAIL: regex → GLiGuard → LLM topic check
-            ├── planner.py             # Plans steps; guards plan; interrupt() for human approval
+            ├── planner.py             # planner node + plan_review node (the only interrupt())
             ├── resume_guard.py        # GUARDRAIL: guards resume message (regex → GLiGuard only)
             ├── react_researcher.py    # ReAct: model ↔ ToolNode loop (MCP tools)
             ├── writer.py              # Drafts final answer + extracts verifiable claims
             ├── output_guard.py        # GUARDRAIL: GLiGuard PII redaction → deterministic verification check
             └── subgraphs/
+                ├── __init__.py
+                ├── _rubric_models.py  # ✓ Phase 5b — CriterionVerdict / HolisticCriterionVerdict + helpers
                 ├── verification.py    # SUBGRAPH + FAN-OUT/FAN-IN: parallel claim verifiers via Send
                 └── reflection.py      # SUBGRAPH + REFLECTION: critic/refiner loop
 ```
@@ -197,6 +216,7 @@ flowchart TD
 ```python
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]  # supports RemoveMessage(id=...)
+    question: str  # this turn's sanitised question, set by input_guard
     plan: list[str]  # Planner output
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer
@@ -205,6 +225,7 @@ class AgentState(TypedDict):
     draft_answer: str  # writer output before reflection
     reflection_attempts: int  # reflection loop counter
     reflection_passed: bool
+    reflection_low_confidence: list[str]  # criteria the final critic pass flagged for human review
     final_answer: str  # output_guard-approved answer
     status: (
         str  # "planning"|"researching"|"writing"|"verifying"|"reflecting"|"done"|"aborted"|"blocked"|"dead_lettered"
@@ -216,7 +237,7 @@ class AgentState(TypedDict):
 **Key patterns**:
 - All nodes: `async def node(state: AgentState, config: RunnableConfig) -> dict`
 - Factory pattern: `make_planner_node(llm)` returns the async function
-- Interrupt: `planner` guards plan text then calls `interrupt({"plan": plan_text})`; resumed with `Command(resume=True/False)`; router adds resume message to state before resuming so `resume_guard` can inspect it
+- Interrupt: `planner` guards the plan text; the separate `plan_review` node then calls `interrupt({"plan": plan_steps})`; resumed with `Command(resume=True/False)`; router adds resume message to state before resuming so `resume_guard` can inspect it
 - Subgraphs: `verify_subgraph` and `reflection_subgraph` are compiled `StateGraph` instances wrapped by mapper nodes in `workflow.py`
 - Token streaming: `graph.astream_events(input, config, version="v2")` filtered to `on_chat_model_stream`
 - All LangGraph invocations are async: `await graph.ainvoke(...)`, `await graph.aget_state(...)`, `await graph.aupdate_state(...)`
@@ -291,51 +312,44 @@ false blocks from transient LLM errors.
 The model decides when it has gathered enough context. A hard ceiling of `MAX_REACT_STEPS` (default 10, configurable via `AGENT_MAX_REACT_STEPS`) exits the loop even if the model keeps emitting `tool_calls` — the writer runs with whatever context was gathered.
 
 MCP tools are loaded **once** in `lifespan()` before the graph is compiled, then injected
-into both the node closure and `ToolNode`. This keeps the MCP connection alive for the
-entire lifetime of the app and avoids reopening it on every node invocation.
+into both the node closure and `ToolNode`, so tool discovery doesn't repeat on every node
+invocation (each tool *call* still opens its own MCP session — see the MCP section below).
 
 ```python
 # nodes/react_researcher.py
-def make_react_researcher_node(llm_with_tools: BaseChatModel) -> Callable:
-    async def react_researcher(state: AgentState, config: RunnableConfig) -> dict:
-        response = await llm_with_tools.ainvoke(state["messages"], config)
-        return {"messages": [response], "react_steps": state["react_steps"] + 1}
-
-    return react_researcher
+def make_react_researcher_node_from_llm(llm: BaseChatModel, mcp_tools: list[BaseTool]) -> Callable:
+    return make_react_researcher_node(llm.bind_tools(mcp_tools))
 
 
-# workflow.py — tools loaded before compile; condition routes to "writer" not END
-def compile_graph(
-    checkpointer: AsyncPostgresSaver,
-    llm: BaseChatModel,
-    mcp_tools: list[BaseTool],
-) -> CompiledStateGraph:
-    llm_with_tools = llm.bind_tools(mcp_tools)
+def make_tools_node(mcp_tools: list[BaseTool]) -> ToolNode:
+    # awrap_tool_call bounds every call by AGENT_MCP_TOOL_CALL_TIMEOUT_SECONDS
+    return ToolNode(mcp_tools, awrap_tool_call=_timeout_bounded_tool_call, handle_tool_errors=True)
 
-    graph = StateGraph(AgentState)
-    graph.add_node("react_researcher", make_react_researcher_node(llm_with_tools))
-    graph.add_node("tools", ToolNode(mcp_tools))
 
-    # Cannot use the built-in tools_condition here: it returns "__end__" (not "writer")
-    # when there are no tool_calls.  A custom condition is required.
-    # Also enforces the MAX_REACT_STEPS ceiling to prevent runaway tool loops.
-    def react_condition(state: AgentState) -> Literal["tools", "writer"]:
-        last = state["messages"][-1]
-        ceiling_hit = state["react_steps"] >= settings.max_react_steps
-        return "tools" if getattr(last, "tool_calls", None) and not ceiling_hit else "writer"
+# workflow.py — module-level condition; routes to "writer", not END
+# Cannot use the built-in tools_condition: it returns "__end__" (not "writer") when there
+# are no tool_calls. Also enforces the AGENT_MAX_REACT_STEPS ceiling.
+def _react_condition(state: AgentState) -> Literal["tools", "writer"]:
+    last = state["messages"][-1]
+    ceiling_hit = state.get("react_steps", 0) >= settings.max_react_steps
+    return "tools" if getattr(last, "tool_calls", None) and not ceiling_hit else "writer"
 
-    graph.add_conditional_edges("react_researcher", react_condition)
-    graph.add_edge("tools", "react_researcher")
-    ...
-    return graph.compile(checkpointer=checkpointer)
+
+graph.add_node("react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools))
+graph.add_node("tools", make_tools_node(mcp_tools))
+graph.add_conditional_edges("react_researcher", _react_condition)
+graph.add_edge("tools", "react_researcher")
 
 
 # main.py lifespan — tools loaded once at startup; client has no async context manager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mcp_tools = await load_mcp_tools(settings.mcp_server_url)  # await — get_tools() is async
-    async with AsyncPostgresSaver.from_conn_string(settings.db_uri) as checkpointer:
+    gliguard = GLiGuardClient(settings.guard_model, settings.guard_device, settings.guard_max_concurrency)
+    await gliguard.aload(settings.guard_load_timeout_seconds, retries=settings.guard_load_retries)
+    async with AsyncConnectionPool(...) as pool:  # see "Postgres Checkpointer"
+        checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
-        app.state.graph = compile_graph(checkpointer, build_llm(), mcp_tools)
+        app.state.graph = compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs)
         yield
 ```
 
@@ -358,18 +372,16 @@ class ReflectionState(TypedDict):
     low_confidence: list[str]  # criteria the critic was unsure about (Phase 5b)
 
 
-MAX_REFLECTION_ATTEMPTS = settings.max_reflection_attempts  # default 5
-
-
-def should_refine(state: ReflectionState) -> Literal["refiner", END]:
-    ceiling_hit = state["reflection_attempts"] >= MAX_REFLECTION_ATTEMPTS
-    return END if state["passed"] or ceiling_hit else "refiner"
+def should_refine(state: ReflectionState) -> Literal["refiner", "__end__"]:
+    ceiling_hit = state["reflection_attempts"] >= settings.max_reflection_attempts  # default 5
+    return "__end__" if state["passed"] or ceiling_hit else "refiner"
 
 
 reflection_subgraph = reflection_graph.compile()
 
 
-# workflow.py — wrapper maps parent keys ↔ subgraph keys
+# workflow.py — wrapper maps parent keys ↔ subgraph keys (built by _make_run_reflection(llm))
+@with_dead_letter("reflection_subgraph")
 async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
     result = await reflection_subgraph.ainvoke(
         {
@@ -497,14 +509,17 @@ def with_dead_letter(node_name: str) -> Callable:
         async def wrapper(state: AgentState, config: RunnableConfig) -> dict:
             try:
                 return await fn(state, config)
+            except GraphInterrupt:
+                raise  # interrupt() signal — must propagate so the runtime can suspend the graph
             except Exception as exc:
+                dead_letter_counter.increment(node_name)
                 return {
                     "dead_letter": DeadLetterInfo(
                         failed_node=node_name,
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         traceback=traceback.format_exc(),
-                        timestamp=datetime.utcnow().isoformat(),
+                        timestamp=datetime.now(tz=UTC).isoformat(),
                     ),
                     "status": "dead_lettered",
                 }
@@ -539,9 +554,10 @@ graph.add_conditional_edges("verify_subgraph", after("reflection_subgraph"))
 ```
 
 Nodes decorated with `@with_dead_letter("node_name")`: `input_guard`, `planner`, `plan_review`,
-`resume_guard`, `react_researcher` (and its `ToolNode` wrapper), `writer`, `output_guard`,
-and the two subgraph wrapper nodes (`verify_subgraph`, `reflection_subgraph` in workflow.py)
+`resume_guard`, `react_researcher`, `writer`, `output_guard`, and the two subgraph wrapper nodes (`verify_subgraph`, `reflection_subgraph` in workflow.py)
 so internal subgraph exceptions also route to `dead_letter` instead of crashing the invocation.
+The `tools` `ToolNode` is not decorated: `handle_tool_errors=True` turns a failing or timed-out
+tool call into an error `ToolMessage` the model can react to.
 
 ### Circuit Breakers & Loop Guards
 
@@ -562,22 +578,26 @@ gathered — no tool results are lost.
 
 #### 3 — LLM call timeout (`AGENT_LLM_TIMEOUT_SECONDS`, default `60`)
 
-`_llm_invoke.py` wraps every `llm.ainvoke` / `llm.astream` call in `asyncio.wait_for` with
-`timeout=settings.llm_timeout_seconds`. On expiry, `asyncio.TimeoutError` is caught and
-re-raised as `LLMServiceUnavailableError` so the dead-letter decorator picks it up.
+`_llm_invoke.py` wraps every `llm.ainvoke` call in `asyncio.wait_for`. The timeout is read from
+`llm.metadata["timeout_seconds"]` (set by `build_llm()` from the per-node override or
+`settings.llm_timeout_seconds`). On expiry, `TimeoutError` is re-raised as
+`LLMServiceUnavailableError` so the dead-letter decorator picks it up.
 
 ```python
 # nodes/_llm_invoke.py
 async def llm_invoke(llm: BaseChatModel, messages: list[AnyMessage], config: RunnableConfig) -> AnyMessage:
+    timeout = (llm.metadata or {}).get("timeout_seconds", settings.llm_timeout_seconds)
     try:
-        return await asyncio.wait_for(
-            llm.ainvoke(messages, config),
-            timeout=settings.llm_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        raise LLMServiceUnavailableError("LLM call timed out")
-    except Exception as exc:
-        raise _translate(exc)
+        return await asyncio.wait_for(llm.ainvoke(messages, config), timeout=timeout)
+    except TimeoutError as err:
+        raise LLMServiceUnavailableError(f"LLM call timed out after {timeout}s") from err
+    except LLMError:
+        raise
+    except Exception as err:
+        translated = _translate_exception(err)  # None for unknown errors → propagate unmasked
+        if translated is not None:
+            raise translated from err
+        raise
 ```
 
 #### 4 — Global pipeline step cap (`AGENT_MAX_PIPELINE_STEPS`, default `50`)
@@ -603,17 +623,18 @@ are re-raised immediately.
 ```python
 # nodes/_llm_invoke.py
 async def llm_invoke_with_retry(llm: BaseChatModel, messages: list[AnyMessage], config: RunnableConfig) -> AnyMessage:
-    last_exc: Exception | None = None
-    for attempt in range(settings.llm_max_retries + 1):
+    max_retries = (llm.metadata or {}).get("max_retries", settings.llm_max_retries)
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
         try:
             return await llm_invoke(llm, messages, config)
-        except (LLMRateLimitError, LLMServiceUnavailableError) as exc:
-            last_exc = exc
-            wait = min(2**attempt, 30)
-            await asyncio.sleep(wait)
+        except (LLMRateLimitError, LLMServiceUnavailableError) as err:
+            last_err = err
+            if attempt < max_retries:
+                await asyncio.sleep(min(2**attempt, 30))
         except LLMError:
             raise
-    raise last_exc  # type: ignore[misc]
+    raise last_err  # type: ignore[misc]
 ```
 
 #### 6 — MCP tool call timeout (`AGENT_MCP_TOOL_CALL_TIMEOUT_SECONDS`, default `30`)
@@ -622,7 +643,8 @@ The verifier node in `verify_subgraph` wraps `fact_check_tool.ainvoke(...)` in `
 (same pattern as the LLM timeout above). A hung or failing MCP call raises instead of blocking
 the branch indefinitely; the `verify_subgraph`/`reflection_subgraph` wrapper nodes in
 `workflow.py` are wrapped with `@with_dead_letter` so the failure routes to `dead_letter`
-instead of crashing the whole graph invocation.
+instead of crashing the whole graph invocation. ReAct tool calls get the same bound through
+`ToolNode(awrap_tool_call=...)`; there a timeout becomes an error `ToolMessage` instead.
 
 #### 7 — GLiGuard concurrency cap (`AGENT_GUARD_MAX_CONCURRENCY`, default `4`)
 
@@ -633,9 +655,6 @@ means N concurrent forward passes through that single model, each with its own a
 memory. `GLiGuardClient` holds an `asyncio.Semaphore(guard_max_concurrency)`; both async
 check methods acquire it before dispatching to a thread, so excess concurrent calls queue
 instead of piling up unbounded (a real risk of exhausting GPU VRAM when `AGENT_GUARD_DEVICE=cuda`).
-
-All limits above are also exposed to the eval runner so experiments can be reproduced with
-different ceilings without redeploying.
 
 ---
 
@@ -665,7 +684,7 @@ Routes to `END: blocked` (sets `status="blocked"`, `guard_reason=...`) on any fa
 
 | Model | Params | Package | German | Threat scope | Notes |
 |---|---|---|---|---|---|
-| **GLiGuard** (`fastino/gliguard-LLMGuardrails-300M`) ✓ **chosen** | 300M | `gliner2[local]` | Yes (100+ langs, mmBERT) | Prompt + response safety, toxicity (multi-label), jailbreak, PII, 13+ categories | Apache 2.0; evaluates both input and output; 16x faster than comparable accuracy; CPU-optimized |
+| **GLiGuard** (`fastino/gliguard-LLMGuardrails-300M`) ✓ **chosen** | 300M | `gliner2` | Yes (100+ langs, mmBERT) | Prompt + response safety, toxicity (multi-label), jailbreak, PII, 13+ categories | Apache 2.0; evaluates both input and output; 16x faster than comparable accuracy; CPU-optimized |
 | Llama Prompt Guard 2 86M (`meta-llama/Llama-Prompt-Guard-2-86M`) | 86M | `transformers` | Yes (8 langs) | Prompt injection + jailbreak (binary only) | Llama 4 license; AUC 0.998, 97.5% recall @ 1% FPR; no response-side classification |
 | Llama Prompt Guard 2 22M (`meta-llama/Llama-Prompt-Guard-2-22M`) | 22M | `transformers` | Yes (8 langs) | Prompt injection + jailbreak (binary only) | Llama 4 license; 19.3ms latency; best for edge/mobile; AUC 0.995 |
 | Llama Guard 3 1B (`meta-llama/Llama-Guard-3-1B`) | 1B | `transformers` | Yes (8 langs) | 13 MLCommons harm categories, prompt + response | Llama 3.2 license; best breadth for general content safety; F1 0.899 |
@@ -676,24 +695,10 @@ GLiGuard was chosen because it covers both prompt and response classification, s
 
 ## LLM Client (LiteLLM + Unsloth / llama.cpp)
 
-`build_llm()` lives in `nodes/_llm_invoke.py` alongside the retry/timeout wrappers so all LLM concerns are co-located.
-
-```python
-# nodes/_llm_invoke.py
-from langchain_community.chat_models import ChatLiteLLM
-
-
-def build_llm() -> ChatLiteLLM:
-    # Qwen3 thinking mode: enable_thinking must go through model_kwargs so
-    # LiteLLM forwards it to the llama.cpp/Unsloth server.  ChatLiteLLM's own
-    # `thinking=` kwarg is Anthropic-specific and has no effect here.
-    return ChatLiteLLM(
-        model=settings.llm_model,
-        api_base=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model_kwargs={"enable_thinking": settings.llm_thinking},
-    )
-```
+`build_llm()` lives in `nodes/_llm_invoke.py` alongside the retry/timeout wrappers so all LLM
+concerns are co-located. `ChatLiteLLM` comes from `langchain_litellm`. Qwen3 thinking mode goes
+through `model_kwargs={"enable_thinking": ...}` so LiteLLM forwards it to the llama.cpp/Unsloth
+server; `ChatLiteLLM`'s own `thinking=` kwarg is Anthropic-specific and has no effect here.
 
 Config: `AGENT_LLM_MODEL` (default `openai/unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`), `AGENT_LLM_BASE_URL` (default `http://127.0.0.1:8888/v1`), `AGENT_LLM_THINKING` (default `false`), `AGENT_LLM_TIMEOUT_SECONDS` (default `60`), `AGENT_LLM_MAX_RETRIES` (default `3`), `AGENT_MAX_REFLECTION_ATTEMPTS` (default `5`), `AGENT_MAX_REACT_STEPS` (default `10`).
 
@@ -701,13 +706,10 @@ Default model is [Unsloth Qwen3.6](https://unsloth.ai/docs/models/qwen3.6): MLX 
 
 ### Node-Level LLM Config
 
-Different nodes have different latency/quality trade-offs. Guards want a fast, cheap call; planners and critics benefit from thinking mode. `NodeLLMConfig` is a dataclass of optional overrides; any field left `None` falls back to the global `Settings` value. `build_llm(override)` is the single construction point — retry/timeout logic in `llm_invoke_with_retry` is unchanged.
+Different nodes have different latency/quality trade-offs: classification-style calls want deterministic output, drafting benefits from a little variety. `NodeLLMConfig` is a dataclass of optional overrides; any field left `None` falls back to the global `Settings` value. `build_llm(override)` is the single construction point.
 
 ```python
 # nodes/_llm_invoke.py
-from dataclasses import dataclass
-
-
 @dataclass
 class NodeLLMConfig:
     model: str | None = None
@@ -719,59 +721,71 @@ class NodeLLMConfig:
 
 def build_llm(override: NodeLLMConfig | None = None) -> ChatLiteLLM:
     cfg = override or NodeLLMConfig()
+    timeout = cfg.timeout_seconds if cfg.timeout_seconds is not None else settings.llm_timeout_seconds
+    max_retries = cfg.max_retries if cfg.max_retries is not None else settings.llm_max_retries
+    thinking = cfg.thinking if cfg.thinking is not None else settings.llm_thinking
     return ChatLiteLLM(
         model=cfg.model or settings.llm_model,
         api_base=settings.llm_base_url,
         api_key=settings.llm_api_key,
         temperature=cfg.temperature,  # None → provider default
-        model_kwargs={"enable_thinking": cfg.thinking if cfg.thinking is not None else settings.llm_thinking},
+        streaming=True,  # required for astream_events to emit on_chat_model_stream chunks
+        model_kwargs={"enable_thinking": thinking},
+        metadata={"timeout_seconds": timeout, "max_retries": max_retries},
     )
 ```
 
-`_build_graph` and `compile_graph` accept a `node_llm_configs: dict[str, NodeLLMConfig] | None` map. Nodes absent from the map receive the default LLM. LLM instances are deduplicated — nodes sharing the same resolved config reuse the same object.
+`compile_graph` accepts a `node_llm_configs: dict[str, NodeLLMConfig] | None` map and builds one LLM instance per key; nodes absent from the map share the default LLM.
 
 ```python
 # workflow.py
 def _build_graph(
     default_llm: BaseChatModel,
     mcp_tools: list[BaseTool],
-    node_llms: dict[str, BaseChatModel] | None = None,
+    gliguard: GLiGuardClient | _NullGuard,
+    fact_check_tool: BaseTool | None = None,
+    node_llms: Mapping[str, BaseChatModel] | None = None,
 ) -> StateGraph:
     nlm = node_llms or {}
-    graph.add_node("input_guard", make_input_guard_node(nlm.get("input_guard", default_llm)))
-    graph.add_node("planner", make_planner_node(nlm.get("planner", default_llm)))
+    graph.add_node("input_guard", make_input_guard_node(nlm.get("input_guard", default_llm), gliguard))
+    graph.add_node("planner", make_planner_node(nlm.get("planner", default_llm), gliguard))
+    graph.add_node("plan_review", make_plan_review_node())
+    graph.add_node("resume_guard", make_resume_guard_node(gliguard))
     graph.add_node(
         "react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools)
     )
     graph.add_node("writer", make_writer_node(nlm.get("writer", default_llm)))
-    graph.add_node("output_guard", make_output_guard_node(nlm.get("output_guard", default_llm)))
-    # reflection subgraph receives its own LLM via build_reflection_subgraph(llm)
+    graph.add_node("verify_subgraph", _make_run_verification(nlm.get("verification", default_llm), fact_check_tool))
     graph.add_node("reflection_subgraph", _make_run_reflection(nlm.get("reflection", default_llm)))
+    graph.add_node("output_guard", make_output_guard_node(gliguard))  # no LLM
     ...
 
 
 def compile_graph(
-    checkpointer: AsyncPostgresSaver,
+    checkpointer: BaseCheckpointSaver,
     mcp_tools: list[BaseTool],
+    gliguard: GLiGuardClient,
     node_llm_configs: dict[str, NodeLLMConfig] | None = None,
 ) -> CompiledStateGraph:
     default_llm = build_llm()
+    fact_check_tool = next((t for t in mcp_tools if t.name == "fact_check"), None)
     node_llms = {name: build_llm(cfg) for name, cfg in (node_llm_configs or {}).items()}
-    return _build_graph(default_llm, mcp_tools, node_llms).compile(checkpointer=checkpointer)
+    return _build_graph(default_llm, mcp_tools, gliguard, fact_check_tool, node_llms).compile(checkpointer=checkpointer)
 ```
 
-`main.py` lifespan passes the default node config map. Guards use the default (fast, no thinking); planner, react_researcher, writer, and reflection nodes enable thinking if `AGENT_LLM_THINKING=true`.
+`main.py` lifespan passes a temperature-only map; thinking stays on the global `AGENT_LLM_THINKING` for every node.
 
 ```python
-# main.py lifespan — intent-declaring config map; adjust per deployment
+# main.py lifespan — adjust per deployment
 node_llm_configs = {
-    "planner": NodeLLMConfig(thinking=True),
-    "react_researcher": NodeLLMConfig(thinking=True),
-    "writer": NodeLLMConfig(thinking=True),
-    "reflection": NodeLLMConfig(thinking=True),
-    # input_guard and output_guard: default (no thinking, faster)
+    "input_guard": NodeLLMConfig(temperature=0.0),
+    "planner": NodeLLMConfig(temperature=0.0),
+    "react_researcher": NodeLLMConfig(temperature=0.0),
+    "writer": NodeLLMConfig(temperature=0.3),
+    "verification": NodeLLMConfig(temperature=0.0),
+    "reflection": NodeLLMConfig(temperature=0.2),
 }
-app.state.graph = compile_graph(checkpointer, mcp_tools, node_llm_configs)
+app.state.graph = compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs)
 ```
 
 `llm_invoke_with_retry` reads `timeout_seconds` and `max_retries` from the LLM instance's metadata rather than directly from `settings`, so per-node overrides flow through automatically.
@@ -820,13 +834,13 @@ The MCP server runs as a separate process (or in-process for tests):
 
 ```bash
 # standalone
-uv run python -m app.mcp.server          # serves on http://localhost:8001
+uv run python -m app.mcp                 # serves on http://localhost:8001 (AGENT_MCP_HOST / AGENT_MCP_PORT)
 
 # or via taskipy
 uv run task mcp
 ```
 
-Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
+Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001/mcp`).
 
 ---
 
@@ -840,6 +854,9 @@ Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
 | `POST` | `/v1/threads/{thread_id}/replay` | Re-invoke from a named checkpoint |
 | `GET` | `/health` | Liveness — static, no dependency checks |
 | `GET` | `/ready` | Readiness — checks GLiGuard loaded, Postgres reachable, MCP tools loaded |
+| `GET` | `/metrics/dead-letter` | In-process dead-letter counters (total + per node) |
+
+The `/v1/*` routes require `X-API-Key` when `AGENT_API_KEY` is set; `/health`, `/ready` and `/metrics/*` are unauthenticated.
 
 ---
 
@@ -871,8 +888,9 @@ the same ideas later):
   ergonomics, not a correctness practice. Still adopted (5e) but labelled as a convention.
 
 Phase 5 was split into five sub-phases, ordered by leverage-per-effort. 5a (node-level
-eval tier), 5b (structured rubric judge), 5c (guardrail red-team suite) and 5d
-(harness-integrity fixes for `run_experiment.py`) and 5e (unified entrypoint) have all landed.
+eval tier), 5b (structured rubric judge), 5c (guardrail red-team suite), 5d
+(harness-integrity fixes for `run_experiment.py`) and 5e (unified entrypoint) have all landed;
+5a and 5d are summarised in the Target Layout and README rather than kept as sections here.
 
 ---
 
@@ -896,7 +914,7 @@ general research questions, so 5b was split instead:
   appended to the critique for the refiner. Low-confidence criteria propagate to
   `AgentState.reflection_low_confidence`.
 - **Structured-output mechanism**: parse-and-validate against the Pydantic model, not
-  `.with_structured_output()` — the default local backends (llama.cpp / Ollama via LiteLLM)
+  `.with_structured_output()` — the default local backends (llama.cpp / Unsloth Studio via LiteLLM)
   don't reliably support tool-calling-based structured output. `parse_structured` now strips
   a markdown code fence first; before this, a fenced critic response failed to parse and was
   silently treated as a pass.
@@ -967,13 +985,13 @@ independently corroborated by non-lab sources during the audit:
   lost the next time someone edits a threshold.
 
 **Tests**:
-- `tests/graph/nodes/subgraphs/test_reflection.py` — add cases asserting the critic's
-  structured output validates against `QualityVerdict`, and that a `confidence: "low"`
-  verdict is surfaced (not silently dropped) in whatever the critic returns to state.
+- `tests/graph/nodes/subgraphs/test_reflection.py` — the critic's structured output
+  validates against `CriticVerdict` (per the as-built split above), and a `confidence: "low"`
+  verdict is surfaced (not silently dropped) in what the critic returns to state.
 
-**Done when**: the critic's LLM call round-trips through `QualityVerdict` validation
-without manual JSON parsing, and `scoring_rubric.yaml`'s `pass_policy.minimum_total`
-matches the new max score.
+**Done when**: the critic's LLM call round-trips through `CriticVerdict` validation, the
+eval judge's through `QualityVerdict`, and `scoring_rubric.yaml`'s
+`pass_policy.minimum_total` matches the new max score.
 
 ---
 
@@ -1176,7 +1194,7 @@ agent-app/app/prompts/
     │   └── draft.human.md               # "Question: {question}\n\nResearch plan:\n{plan_summary}"
     ├── reflection/
     │   ├── critic.system.md
-    │   ├── critic.human.md              # "Draft answer:\n{draft}"
+    │   ├── critic.human.md              # "Question:\n{question}\n\nDraft answer:\n{draft}"
     │   ├── refiner.system.md
     │   └── refiner.human.md             # "Draft:\n{draft}\n\nCritique:\n{critique}"
     ├── verification/
@@ -1204,7 +1222,7 @@ agent-app/app/prompts/
   - `nodes/writer.py` — `_SYSTEM_PROMPT = load_system("writer", "draft")`; `context =
     render_human("writer", "draft", question=question, plan_summary=plan_summary)`.
   - `nodes/subgraphs/reflection.py` — `_CRITIC_PROMPT = load_system("reflection", "critic")`,
-    critic `HumanMessage` becomes `render_human("reflection", "critic", draft=state["draft"])`;
+    critic `HumanMessage` becomes `render_human("reflection", "critic", question=state["question"], draft=state["draft"])`;
     `_REFINER_PROMPT = load_system("reflection", "refiner")`, refiner `HumanMessage` becomes
     `render_human("reflection", "refiner", draft=state["draft"], critique=state["critique"])`.
   - `nodes/subgraphs/verification.py` — `_VERIFY_PROMPT = load_system("verification",
@@ -1244,7 +1262,7 @@ round-trips correctly with externalized prompts.
 ## Dependencies
 
 ```toml
-# Matches agent-app/pyproject.toml as of Phase 4
+# Matches agent-app/pyproject.toml
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -1263,6 +1281,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.3",           # pin patch: <0.1.3 has breaking tool schema bug
     "logger",                                  # custom structlog wrapper: get_logger() + configure_logging()
     "gliner2>=1.3",                            # GLiGuard — input/output PII + injection + jailbreak guard
+    "slowapi>=0.1.9",                          # AGENT_RATE_LIMIT
 ]
 
 dev_dependencies = [
@@ -1274,6 +1293,7 @@ dev_dependencies = [
     "pyright>=1.1",
     "ruff",
     "taskipy>=1.14.0",
+    "pip-audit>=2.7",
 ]
 
 # GLiGuard model downloaded at first use via HuggingFace Hub:
@@ -1287,82 +1307,18 @@ dev_dependencies = [
 
 ## README.md Guide Sections
 
-Full local dev setup in order:
+`README.md` is the source of truth for setup commands; its Local setup section covers, in order:
 
-1. **Prerequisites** — Docker, Python 3.13, uv, Ollama
+1. **Prerequisites** — Docker, Python 3.13, uv, an LLM inference server
+2. **Postgres** — `postgres:17` container on port `5433`
+3. **LLM setup** — Option A: Unsloth Studio on `:8888` (default `AGENT_LLM_BASE_URL`);
+   Option B: headless llama.cpp `llama-server` on `:8889`
+4. **MCP server** — `uv run task mcp` on `:8001`
+5. **App** — `uv run python -m app` on `:8000`
+6. **Langfuse** (optional) — local Docker stack on `:3000`
+7. **LangGraph Studio** — free Mac desktop app reading `langgraph.json`
 
-2. **LLM inference server** (llama.cpp or Unsloth Studio):
-
-   **Option A — Unsloth Studio** (recommended; GUI, easier model management):
-   ```bash
-   pip install unsloth-studio
-   unsloth studio -H 127.0.0.1 -p 8888
-   ```
-   Then open **http://127.0.0.1:8888** in your browser. Search for
-   `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, select the `UD-Q4_K_XL` quant, download it,
-   then click **Start**. Studio starts a llama.cpp server in the background and shows
-   the API port in the UI — note that port and set `AGENT_LLM_BASE_URL=http://127.0.0.1:<port>/v1`.
-
-   **Option B — llama.cpp server** (headless):
-   ```bash
-   # download model
-   hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF --include "*UD-Q4_K_XL*"
-   # start server on port 8001 (alias must match AGENT_LLM_MODEL)
-   ./llama.cpp/llama-server \
-     --model unsloth/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
-     --alias "unsloth/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
-     --spec-type draft-mtp --spec-draft-n-max 2 \
-     --ctx-size 16384 --port 8002
-   ```
-   OpenAI-compatible API available at `http://127.0.0.1:8002/v1` — set `AGENT_LLM_BASE_URL=http://127.0.0.1:8002/v1` if using this option instead of Studio.
-   Port 8001 is reserved for the MCP server (`AGENT_MCP_SERVER_URL` default).
-
-3. **Postgres**:
-   ```bash
-   docker run --name langgraph-db \
-     -e POSTGRES_PASSWORD=postgres \
-     -e POSTGRES_DB=langgraph \
-     -e POSTGRES_USER=postgres \
-     -p 5433:5432 \
-     -d postgres:17
-   ```
-
-4. **Langfuse** (local Docker):
-   ```bash
-   git clone https://github.com/langfuse/langfuse.git
-   cd langfuse
-   docker compose up -d
-   # UI: http://localhost:3000
-   # Default login: admin@langfuse.com / password
-   # Create a project → copy keys to .env
-   ```
-
-5. **MCP server** (in a separate terminal):
-   ```bash
-   cd agent-app
-   uv run python -m app.mcp.server   # serves on http://localhost:8001
-   ```
-
-6. **App**:
-   ```bash
-   cd agent-app
-   cp .env.example .env   # fill LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
-   uv sync
-   uv run python -m app
-   ```
-
-7. **LangGraph Studio** (free Mac desktop app):
-   ```
-   Download from https://studio.langchain.com
-   Open agent-app/ — Studio reads langgraph.json and starts a dev server
-   ```
-
-8. **Evals**:
-   ```bash
-   uv run task create-dataset
-   uv run task experiment
-   # Results: evals/.runs/ and Langfuse UI
-   ```
+Evals and tests are in README's Tests section (`uv run task test`, `uv run python evals/run.py <config>`).
 
 ---
 
@@ -1382,8 +1338,8 @@ Full local dev setup in order:
 
 | Function | Signature | Used by |
 |---|---|---|
-| `create_graph()` | `() -> StateGraph` | LangGraph Studio — returns the uncompiled graph; Studio injects its own checkpointer and MCP client |
-| `compile_graph(checkpointer, llm, mcp_tools)` | `(AsyncPostgresSaver, BaseChatModel, list[BaseTool]) -> CompiledStateGraph` | `main.py` lifespan — called after MCP client and checkpointer are both ready |
+| `create_graph()` | `() -> StateGraph` | LangGraph Studio — returns the uncompiled graph built with the default LLM, no MCP tools and a no-op guard; Studio injects its own checkpointer |
+| `compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs=None)` | `(BaseCheckpointSaver, list[BaseTool], GLiGuardClient, dict[str, NodeLLMConfig] \| None) -> CompiledStateGraph` | `main.py` lifespan — called after MCP tools, GLiGuard and the checkpointer are all ready |
 
 This separation means Studio can inspect the graph topology without starting a Postgres instance or MCP server.
 
@@ -1407,7 +1363,7 @@ This separation means Studio can inspect the graph topology without starting a P
 
 ## Notes
 
-- Ollama tests: skip live LLM calls by default (mock LLM); set `AGENT_RUN_LLM_TESTS=true` to hit real Ollama
+- Tests: pytest never calls a live LLM (mock LLM throughout); Postgres-backed tests skip when Postgres on `localhost:5433` is unreachable. Live-LLM checks live in `evals/` (`smoke_test.py`, `run.py node_eval`)
 - MCP server tests: use in-process `fastmcp` test client; no network required
 - Reflection loop ceiling: `AGENT_MAX_REFLECTION_ATTEMPTS` (default 5); ReAct ceiling: `AGENT_MAX_REACT_STEPS` (default 10); both are intentionally finite to bound cost
 - LLM timeout: `AGENT_LLM_TIMEOUT_SECONDS` (default 60s); retries: `AGENT_LLM_MAX_RETRIES` (default 3, exponential backoff, transient errors only)
