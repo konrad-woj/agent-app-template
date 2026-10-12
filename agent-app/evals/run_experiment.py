@@ -3,7 +3,7 @@
 Drives multi-turn conversations against a *live* agent-app server (POST
 /v1/chat), reads the full checkpoint history directly from the same Postgres
 database the server uses (not through a new API endpoint — see
-`_read_history` below), and scores each run with the four evaluators in
+`_read_history` below), and scores each run with the five evaluators in
 evals/evaluators.py. Results are written to evals/.runs/<config-name>/<timestamp>.json
 and, if Langfuse credentials are configured, also uploaded as scores.
 
@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
 from evals.evaluators import (
+    expected_terms_evaluator,
     make_quality_score_evaluator,
     make_trace_assertion_evaluator,
     plan_approved_evaluator,
@@ -412,6 +413,7 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
         make_quality_score_evaluator(
             rubric["quality_criteria"], cfg.judge_model, rubric["pass_policy"]["minimum_total"]
         ),
+        expected_terms_evaluator,
         make_trace_assertion_evaluator(rubric["trace_assertions"]),
         turns_to_complete_evaluator,
         plan_approved_evaluator,

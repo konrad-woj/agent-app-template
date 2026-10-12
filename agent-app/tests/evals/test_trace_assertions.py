@@ -5,9 +5,49 @@ no LangGraph graph object. Each condition is exercised on a fixture that
 passes and one that's deliberately broken.
 """
 
-from langchain_core.messages import AIMessage, ToolMessage
+from pathlib import Path
+
+import yaml
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from evals.trace_assertions import evaluate_trace_assertions
+
+_SHIPPED_ASSERTIONS: list[dict] = yaml.safe_load(
+    (Path(__file__).resolve().parents[2] / "evals" / "configs" / "scoring_rubric.yaml").read_text()
+)["trace_assertions"]
+
+# next-tuples of a real approved run, in execution order (the run pauses at plan_review).
+_HAPPY_PATH_NEXT = [
+    ("input_guard",),
+    ("planner",),
+    ("plan_review",),
+    ("resume_guard",),
+    ("react_researcher",),
+    ("tools",),
+    ("react_researcher",),
+    ("writer",),
+    ("verify_subgraph",),
+    ("reflection_subgraph",),
+    ("output_guard",),
+    (),
+]
+_HAPPY_PATH_FINAL_STATE = {
+    "messages": [
+        HumanMessage(content="What caused the 2008 financial crisis?"),
+        AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "2008"}, "id": "1"}]),
+        ToolMessage(content="results", tool_call_id="1"),
+        AIMessage(content="I have enough context."),
+    ],
+    "plan": ["Search for causes"],
+    "plan_approved": True,
+    "react_steps": 2,
+    "draft_answer": "x" * 200,
+    "reflection_attempts": 1,
+    "reflection_passed": True,
+    "final_answer": "x" * 200,
+    "status": "done",
+    "guard_reason": None,
+}
 
 _A_PASSES_ON_TOPIC = {
     "id": "a_pass",
@@ -216,6 +256,24 @@ class TestNegativeCaseFiltering:
         assertion = {"id": "a", "condition": "equals", "fields": ["status"], "expected": {"status": "done"}}
         results = evaluate_trace_assertions([assertion], [], {"status": "done"}, include_negative_cases=True)
         assert results == []
+
+
+class TestShippedAssertions:
+    """The rubric's own trace_assertions against realistic histories of the real graph."""
+
+    def _by_id(self, assertion_id: str) -> dict:
+        return next(a for a in _SHIPPED_ASSERTIONS if a["id"] == assertion_id)
+
+    def test_every_positive_assertion_passes_on_a_happy_path_run(self) -> None:
+        results = evaluate_trace_assertions(_SHIPPED_ASSERTIONS, _history(*_HAPPY_PATH_NEXT), _HAPPY_PATH_FINAL_STATE)
+        assert results
+        assert [r.id for r in results if not r.passed] == []
+
+    def test_interrupt_assertion_fails_when_the_run_never_reached_plan_review(self) -> None:
+        # Blocked by the planner's plan guard: ("planner",) appears, but the run never paused.
+        history = _history(("input_guard",), ("planner",), ())
+        result = evaluate_trace_assertions([self._by_id("ta_plan_review_emits_interrupt")], history, {})[0]
+        assert result.passed is False
 
 
 class TestUnknownCondition:

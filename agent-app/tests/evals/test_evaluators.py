@@ -1,9 +1,8 @@
-"""Tests for evals/evaluators.py — Phase 5d.
+"""Tests for evals/evaluators.py — Phases 5d, 5b and 7.
 
 quality_score_evaluator's judge LLM call is mocked (no network) — see
-_mock_llm below. trace_assertion_evaluator, turns_to_complete_evaluator, and
-plan_approved_evaluator are pure functions over a plain `output` dict and
-need no mocking at all.
+_mock_llm below. The other evaluators are pure functions over a plain
+`output` dict and need no mocking at all.
 """
 
 import json
@@ -18,6 +17,7 @@ from pydantic import ValidationError
 
 from evals.evaluators import (
     check_rubric_matches_verdict,
+    expected_terms_evaluator,
     make_quality_score_evaluator,
     make_trace_assertion_evaluator,
     plan_approved_evaluator,
@@ -25,7 +25,7 @@ from evals.evaluators import (
     score_verdict,
     turns_to_complete_evaluator,
 )
-from evals.models import QualityVerdict
+from evals.models import ExpectedOutput, QualityVerdict
 
 # The real rubric — these tests double as a guard that the shipped config and
 # QualityVerdict still agree.
@@ -35,12 +35,21 @@ _RUBRIC = yaml.safe_load(
 _CRITERIA: list[dict] = _RUBRIC["quality_criteria"]
 _MIN_TOTAL: int = _RUBRIC["pass_policy"]["minimum_total"]
 _FULL_MARKS = {
-    "stack_alignment": 4,
-    "pain_point_coverage": 4,
+    "key_point_coverage": 4,
+    "factual_accuracy": 4,
     "specificity": 4,
-    "feasibility": 2,
-    "risk_acknowledgment": 2,
+    "focus": 2,
+    "uncertainty_handling": 2,
 }
+_EXPECTED = ExpectedOutput.model_validate(
+    {
+        "must_cover": [
+            {"id": "kp1", "description": "Subprime mortgage lending fuelled a housing bubble"},
+            {"id": "kp2", "description": "Lehman Brothers collapsed in September 2008"},
+        ],
+        "scoring_hints": ["Should name securitisation (MBS/CDOs) as the transmission channel"],
+    }
+)
 
 
 def _verdict_json(low: tuple[str, ...] = (), **scores: int) -> str:
@@ -92,6 +101,43 @@ class TestPlanApprovedEvaluator:
         assert ev.value == 0
 
 
+_TERM_CHECKS = {"must_include_terms": ["subprime", "Lehman"], "must_not_contain": ["I cannot help with"]}
+
+
+class TestExpectedTermsEvaluator:
+    def test_all_checks_pass(self) -> None:
+        answer = "Subprime lending and the Lehman collapse triggered the crisis."
+        ev = expected_terms_evaluator(output={"final_answer": answer}, expected_output=_TERM_CHECKS)
+        assert ev.value == 1.0
+
+    def test_missing_required_term_is_named(self) -> None:
+        ev = expected_terms_evaluator(
+            output={"final_answer": "Subprime lending caused it."}, expected_output=_TERM_CHECKS
+        )
+        assert ev.value == 2 / 3
+        assert "Lehman" in (ev.comment or "")
+
+    def test_forbidden_phrase_found_is_named(self) -> None:
+        answer = "Subprime and Lehman. I cannot help with more detail."
+        ev = expected_terms_evaluator(output={"final_answer": answer}, expected_output=_TERM_CHECKS)
+        assert ev.value == 2 / 3
+        assert "I cannot help with" in (ev.comment or "")
+
+    def test_matching_is_case_insensitive(self) -> None:
+        answer = "SUBPRIME loans; lehman brothers. i CANNOT help WITH that."
+        ev = expected_terms_evaluator(output={"final_answer": answer}, expected_output=_TERM_CHECKS)
+        assert ev.value == 2 / 3  # both required terms found, forbidden phrase also found
+
+    def test_no_term_checks_scores_one(self) -> None:
+        ev = expected_terms_evaluator(output={"final_answer": "anything"}, expected_output={})
+        assert ev.value == 1.0
+        assert "no term checks" in (ev.comment or "")
+
+    def test_zero_when_no_final_answer(self) -> None:
+        ev = expected_terms_evaluator(output={"final_answer": None}, expected_output=_TERM_CHECKS)
+        assert ev.value == 0.0
+
+
 class TestTraceAssertionEvaluator:
     def test_reports_pass_rate_and_lists_failures(self) -> None:
         assertions = [
@@ -128,8 +174,8 @@ class TestRubricConfig:
             check_rubric_matches_verdict(bad)
 
     def test_missing_and_unknown_criteria_raise(self) -> None:
-        bad = [c for c in _CRITERIA if c["id"] != "feasibility"] + [{"id": "tone", "max_score": 2}]
-        with pytest.raises(ValueError, match="feasibility") as exc:
+        bad = [c for c in _CRITERIA if c["id"] != "focus"] + [{"id": "tone", "max_score": 2}]
+        with pytest.raises(ValueError, match="focus") as exc:
             check_rubric_matches_verdict(bad)
         assert "tone" in str(exc.value)
 
@@ -144,26 +190,27 @@ class TestScoreVerdict:
         assert (result.total, result.max_total, result.passed) == (16, 16, True)
 
     def test_below_per_criterion_minimum_fails_even_with_high_total(self) -> None:
-        # 16 - 2 = 14 ≥ 12, but specificity 2 < minimum 3.
-        result = score_verdict(QualityVerdict.model_validate_json(_verdict_json(specificity=2)), _CRITERIA, _MIN_TOTAL)
+        # 16 - 2 = 14 ≥ 12, but key_point_coverage 2 < minimum 3.
+        verdict = QualityVerdict.model_validate_json(_verdict_json(key_point_coverage=2))
+        result = score_verdict(verdict, _CRITERIA, _MIN_TOTAL)
         assert result.passed is False
-        assert result.below_minimum == ["specificity"]
+        assert result.below_minimum == ["key_point_coverage"]
 
     def test_below_minimum_total_fails(self) -> None:
-        # 3+3+3+1+1 = 11 < 12 while every criterion meets its own minimum.
+        # 3+3+2+1+1 = 10 < 12 while every criterion meets its own minimum.
         verdict = QualityVerdict.model_validate_json(
-            _verdict_json(stack_alignment=3, pain_point_coverage=3, specificity=3, feasibility=1, risk_acknowledgment=1)
+            _verdict_json(key_point_coverage=3, factual_accuracy=3, specificity=2, focus=1, uncertainty_handling=1)
         )
         result = score_verdict(verdict, _CRITERIA, _MIN_TOTAL)
-        assert (result.total, result.passed, result.below_minimum) == (11, False, [])
+        assert (result.total, result.passed, result.below_minimum) == (10, False, [])
 
     def test_low_confidence_criteria_are_collected(self) -> None:
-        verdict = QualityVerdict.model_validate_json(_verdict_json(low=("feasibility",)))
-        assert score_verdict(verdict, _CRITERIA, _MIN_TOTAL).low_confidence == ["feasibility"]
+        verdict = QualityVerdict.model_validate_json(_verdict_json(low=("focus",)))
+        assert score_verdict(verdict, _CRITERIA, _MIN_TOTAL).low_confidence == ["focus"]
 
     def test_score_outside_scale_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            QualityVerdict.model_validate_json(_verdict_json(feasibility=4))
+            QualityVerdict.model_validate_json(_verdict_json(focus=4))
 
 
 class TestRunQualityJudge:
@@ -199,6 +246,24 @@ class TestRunQualityJudge:
             assert f'"{c["id"]}": {{"reasoning"' in prompt
             assert f"score 0-{c['max_score']}" in prompt
 
+    async def test_judge_prompt_includes_key_points_and_hints(self) -> None:
+        llm = _mock_llm(_verdict_json())
+        with patch("evals.evaluators.build_llm", return_value=llm):
+            await run_quality_judge("q", "answer", _CRITERIA, judge_model=None, expected=_EXPECTED)
+        prompt = llm.ainvoke.call_args.args[0][0].content
+        for point in _EXPECTED.must_cover:
+            assert point.description in prompt
+        for hint in _EXPECTED.scoring_hints:
+            assert hint in prompt
+
+    async def test_judge_prompt_omits_reference_block_when_no_expected_output(self) -> None:
+        llm = _mock_llm(_verdict_json())
+        with patch("evals.evaluators.build_llm", return_value=llm):
+            await run_quality_judge("q", "answer", _CRITERIA, judge_model=None)
+        prompt = llm.ainvoke.call_args.args[0][0].content
+        assert "Key points" not in prompt
+        assert "Scoring hints" not in prompt
+
 
 class TestQualityScoreEvaluator:
     def _evaluator(self) -> Callable:
@@ -216,11 +281,21 @@ class TestQualityScoreEvaluator:
         assert ev.metadata["below_minimum"] == ["specificity"]
 
     async def test_low_confidence_is_surfaced_in_comment_and_metadata(self) -> None:
-        with patch("evals.evaluators.build_llm", return_value=_mock_llm(_verdict_json(low=("risk_acknowledgment",)))):
+        with patch("evals.evaluators.build_llm", return_value=_mock_llm(_verdict_json(low=("uncertainty_handling",)))):
             ev = await self._evaluator()(output={"final_answer": "some answer", "question": "q"})
         assert ev.comment.startswith("PASS 16/16")
-        assert "REVIEW (low confidence): risk_acknowledgment" in ev.comment
-        assert ev.metadata["low_confidence"] == ["risk_acknowledgment"]
+        assert "REVIEW (low confidence): uncertainty_handling" in ev.comment
+        assert ev.metadata["low_confidence"] == ["uncertainty_handling"]
+
+    async def test_passes_item_expected_output_to_the_judge(self) -> None:
+        llm = _mock_llm(_verdict_json())
+        with patch("evals.evaluators.build_llm", return_value=llm):
+            await self._evaluator()(
+                output={"final_answer": "some answer", "question": "q"},
+                expected_output=_EXPECTED.model_dump(),
+            )
+        prompt = llm.ainvoke.call_args.args[0][0].content
+        assert _EXPECTED.must_cover[0].description in prompt
 
     async def test_zero_when_judge_fails(self) -> None:
         with patch("evals.evaluators.build_llm", return_value=_mock_llm("not json")):

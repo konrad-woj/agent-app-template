@@ -25,6 +25,7 @@
     - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite---implemented)
     - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy---implemented)
   - [Phase 6 — Prompt Externalization (i18n-ready)](#phase-6--prompt-externalization-i18n-ready---implemented)
+  - [Phase 7 — Research-domain eval realignment](#phase-7--research-domain-eval-realignment---implemented)
 - [Dependencies](#dependencies)
 - [README.md Guide Sections](#readmemd-guide-sections)
 - [LangGraph Studio Config](#langgraph-studio-config-langgraphjson)
@@ -75,8 +76,8 @@ agent-app/
 │   ├── node_eval.py               # ✓ Phase 5e — runs node_tasks over datasets/node/ against a real LLM
 │   ├── guardrail_redteam.py       # ✓ Phase 5c — categorized adversarial guard suite
 │   ├── trace_assertions.py        # ✓ Phase 5d — deterministic condition-dispatch engine
-│   ├── evaluators.py              # ✓ Phase 5d/5b — quality (QualityVerdict)/trace/turns/plan-approved evaluators
-│   ├── models.py                  # ✓ Phase 5d/5b — ExpectedOutput + QualityVerdict
+│   ├── evaluators.py              # ✓ Phase 5d/5b/7 — quality (QualityVerdict)/expected-terms/trace/turns/plan-approved evaluators
+│   ├── models.py                  # ✓ Phase 5d/5b/7 — ExpectedOutput + QualityVerdict
 │   ├── run_experiment.py          # ✓ Phase 5d — HTTP-driven experiment runner
 │   ├── create_dataset.py          # ✓ Phase 5d — optional Langfuse dataset sync
 │   ├── configs/
@@ -85,7 +86,7 @@ agent-app/
 │   │   ├── node_eval.yaml         # type: node_eval
 │   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions (not runnable)
 │   └── datasets/
-│       ├── sample.yaml            # 5 synthetic prospect profiles (pre-sales domain, not research questions)
+│       ├── sample.yaml            # ✓ Phase 7 — 5 research questions with reference key points
 │       └── node/                  # ✓ Phase 5a — one small dataset per node
 ├── tests/
 │   ├── evals/
@@ -1259,6 +1260,120 @@ round-trips correctly with externalized prompts.
 
 ---
 
+### Phase 7 — Research-domain eval realignment — ✓ implemented
+
+**As built**: as planned below, with no deviations. A new `TestShippedAssertions` runs
+every positive trace assertion in the rubric against a realistic happy-path history, so any
+assertion that can't pass on a real run fails in pytest. **Not yet run against a live
+app + LLM.**
+
+**Why**: the experiment harness still scores a pre-sales proposal generator. The judge rubric
+is built around a prospect's tech stack and pain points (stack_alignment,
+pain_point_coverage, specificity, feasibility, risk_acknowledgment), and
+`datasets/sample.yaml` holds five prospect profiles. The agent actually answers research
+questions, so `quality_score` measures behaviour the agent was never built for. On top of
+that, nothing consumes `expected_output`: it is schema-checked at load time and then
+ignored. Three shipped trace assertions also don't match the real graph:
+- `ta_planner_emits_interrupt` looks for a pause at `planner`, but `plan_review` owns the
+  interrupt. It passes anyway, for the wrong reason: the checkpoint after `input_guard`
+  has `next == ("planner",)`.
+- `ta_writer_status_set` reads the *final* `status` and expects `writing`/`reflecting`.
+  `output_guard` always ends a happy-path run with `done`, so this check can never pass.
+- `ta_flow_all_nodes_executed` omits `plan_review`.
+
+**Scope decisions**:
+- The judge uses its own reference-guided rubric, not the reflection critic's criteria.
+  Re-using `CriticVerdict` would grade the agent with the same rubric it already optimises
+  against during reflection. Same 5b structure (reasoning → score → confidence; 0–4 for
+  enumerable evidence, 0–2 for holistic), same 16-point max:
+
+  | id | scale | min | what it checks |
+  |---|---|---|---|
+  | `key_point_coverage` | 0–4 | 3 | covers the item's `must_cover` key points (countable) |
+  | `factual_accuracy` | 0–4 | 3 | no claims contradict the reference points or well-established facts (countable errors) |
+  | `specificity` | 0–4 | 2 | concrete names, dates, figures, mechanisms rather than generic statements |
+  | `focus` | 0–2 | 1 | answers the question asked, without padding or drift (holistic) |
+  | `uncertainty_handling` | 0–2 | 1 | flags contested points or limits of the evidence where they exist (holistic) |
+
+  `pass_policy.minimum_total` stays `12`.
+- `expected_output` is wired in two places:
+  - **The judge** sees the item's `must_cover` key points and `scoring_hints` in its prompt,
+    so `key_point_coverage` is scored against a reference rather than the judge's guess.
+  - **A new deterministic `expected_terms` evaluator** checks `must_include_terms` (each
+    present) and `must_not_contain` (each absent). Matching is a case-insensitive
+    substring match on `final_answer`, with no LLM call. The value is the fraction of
+    checks passed, and the comment names each failing term.
+- `ExpectedOutput` schema: `must_cover: list[KeyPoint]` (`id`, `description`),
+  `must_include_terms`, `must_not_contain`, `scoring_hints`. `PainPoint`, `must_address`
+  and `must_reference` are removed. `extra="forbid"` stays.
+- Dataset: five single-turn research questions with `approve_plan: true`. They are
+  well-documented topics the ReAct loop can find sources for. One of them is deliberately
+  contested, so it exercises `uncertainty_handling`:
+  1. What caused the 2008 financial crisis?
+  2. How do mRNA vaccines work?
+  3. What is CRISPR-Cas9 and how is it used in gene editing?
+  4. What are the main drivers of current global warming?
+  5. Why did the Western Roman Empire fall? (contested; multiple competing explanations)
+- Trace assertion fixes:
+  - `ta_planner_emits_interrupt` becomes `ta_plan_review_emits_interrupt`, with `expected: plan_review`.
+  - `ta_planner_aborts_on_reject` moves to `node: plan_review`.
+  - `ta_writer_status_set` is deleted, with no replacement. Asserting non-empty `claims`
+    would not work: the writer falls back to `claims=[]` when its JSON fails to parse, so
+    an LLM formatting problem would show up as a wiring failure. `ta_writer_produces_draft`
+    already covers the writer.
+  - `ta_flow_all_nodes_executed` gains `plan_review`.
+- Not in scope: changes to the reflection critic, `CriticVerdict`, node-level datasets, or
+  negative-path dataset items (adversarial probes stay in `guardrail_redteam`).
+
+**Deliverables**:
+- `evals/models.py`: replace `PainPoint` with `KeyPoint`, and give `ExpectedOutput` the
+  new fields. `QualityVerdict` gets the five new criteria plus `summary`.
+- `evals/configs/scoring_rubric.yaml`:
+  - Rewrite `quality_criteria` for the new five, with scoring guides.
+  - Drop the pre-sales header caveat.
+  - Apply the trace assertion fixes above.
+  - Remove the "CORRECTED as part of Phase 5d" history comment, keeping only what describes
+    the current file.
+- `evals/evaluators.py`:
+  - `_build_rubric_prompt` and `run_quality_judge` take an optional `ExpectedOutput` and
+    render "Key points" and "Scoring hints" blocks only when they are present.
+  - `make_quality_score_evaluator` validates `expected_output` and passes it through.
+  - Add the new `expected_terms_evaluator`.
+  - Fix the stale "Ollama" docstring.
+- `evals/run_experiment.py`: register `expected_terms_evaluator`.
+- `evals/datasets/sample.yaml`: rewrite with the five research items, each with 3–5
+  `must_cover` key points, 2–3 `must_include_terms`, `must_not_contain`
+  (refusal/placeholder phrases) and 2–3 `scoring_hints`.
+- `evaluators.py` / `run_experiment.py` module docstrings: the evaluator count and list
+  include `expected_terms`. README gets at most a one-line mention next to the experiment
+  command. Update the Target Layout comment for `sample.yaml`.
+
+**Tests** (`tests/evals/`):
+- `test_evaluators.py`: move the rubric/score fixtures to the new criteria. Existing
+  `score_verdict` / `check_rubric_matches_verdict` cases keep their intent. Add:
+  - `test_judge_prompt_includes_key_points_and_hints`: the prompt contains each
+    `must_cover` description and each hint.
+  - `test_judge_prompt_omits_reference_block_when_no_expected_output`.
+  - `TestExpectedTermsEvaluator`: all present → 1.0; a missing required term is named in
+    the comment; a forbidden phrase found is named; matching is case-insensitive; no term
+    checks → 1.0 with an explanatory comment; no `final_answer` → 0.0.
+- `test_dataset_validation.py`: move the valid-item fixture to `must_cover`; the typo
+  case becomes `must_coverr`; `test_sample_dataset_loads_and_validates` keeps checking
+  the shipped dataset (now also asserting every item has ≥3 key points).
+- `test_trace_assertions.py`: a happy-path history whose interrupt checkpoint has
+  `next == ("plan_review",)` passes the shipped `ta_plan_review_emits_interrupt`, and one
+  whose only `("planner",)` checkpoint is the post-input_guard step fails it. That second
+  case is the false positive the old assertion allowed.
+- Existing tests that target `specificity`, `feasibility` or `risk_acknowledgment` are
+  retargeted. In particular, the below-minimum test moves to `key_point_coverage` (min 3),
+  because `specificity`'s minimum drops to 2.
+
+**Done when**: `uv run pytest tests/evals` passes, the full suite passes, ruff and pyright
+are clean, and `grep -rn --exclude-dir=.runs -e prospect -e pain_point -e stack_alignment
+evals tests` finds nothing.
+
+---
+
 ## Dependencies
 
 ```toml
@@ -1358,6 +1473,7 @@ This separation means Studio can inspect the graph topology without starting a P
 - **Phase 5c** ✓: `guardrail_redteam` covers ≥4 categories including the homoglyph and persona-hijack cases; `tests/evals/test_guardrail_redteam.py` shows a disabled guard flips a case to FAIL.
 - **Phase 5e** ✓: `evals/run.py` dispatches `exp_baseline`, `guardrail_redteam` and `node_eval` by name; an unknown name exits 2 listing the available configs (`tests/evals/test_run.py`).
 - **Phase 6**: `uv run pytest tests/test_prompts.py` passes; full `uv run pytest` suite unaffected; `uv run python -m app` + one curl research request round-trips correctly with externalized prompts.
+- **Phase 7** ✓: `uv run pytest tests/evals` passes; `QualityVerdict`, `scoring_rubric.yaml` and `sample.yaml` describe research answers; `expected_terms` runs in the experiment; shipped trace assertions match the real graph (`plan_review` interrupt, no final-status writer check).
 
 ---
 

@@ -1,12 +1,15 @@
-"""Evaluators for evals/run_experiment.py — Phase 5d (see PLAN.md).
+"""Evaluators for evals/run_experiment.py — Phases 5d and 7 (see PLAN.md).
 
-Four evaluators, each returning a Langfuse `Evaluation` so they plug directly
+Five evaluators, each returning a Langfuse `Evaluation` so they plug directly
 into `create_score()` when Langfuse is configured (see run_experiment.py):
 
   quality_score_evaluator    — LLM judge scores final_answer against
                                quality_criteria (evals/configs/scoring_rubric.yaml)
-                               as a QualityVerdict; total and pass/fail are
-                               computed here from the rubric, not by the judge.
+                               as a QualityVerdict, using the item's must_cover key
+                               points and scoring_hints as its reference; total and
+                               pass/fail are computed here from the rubric, not by the judge.
+  expected_terms_evaluator   — deterministic must_include_terms / must_not_contain
+                               check on final_answer. No LLM call.
   trace_assertion_evaluator  — deterministic checks against checkpoint history +
                                final state (evals/trace_assertions.py). No LLM call.
   turns_to_complete_evaluator — how many /v1/chat turns the run took.
@@ -28,7 +31,7 @@ from logger import get_logger
 from app.exceptions import LLMError
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm, llm_invoke_with_retry, parse_structured
 from app.graph.nodes.subgraphs._rubric_models import criterion_verdicts, low_confidence_criteria, max_score_of
-from evals.models import QualityVerdict
+from evals.models import ExpectedOutput, QualityVerdict
 from evals.trace_assertions import evaluate_trace_assertions
 
 logger = get_logger(__name__)
@@ -65,6 +68,36 @@ def plan_approved_evaluator(*, output: dict | None, expected_output: Any = None,
         value=int(ok),
         comment=f"approve_plan={approve_plan}, final status={final_status!r}",
         data_type="BOOLEAN",
+    )
+
+
+def expected_terms_evaluator(*, output: dict | None, expected_output: Any = None, **kwargs: Any) -> Evaluation:
+    """Fraction of term checks final_answer passes: each required term present, each forbidden phrase absent.
+
+    Case-insensitive substring match — a cheap regression signal next to the
+    LLM judge, not a quality score on its own.
+    """
+    _ = kwargs
+    final_answer = (output or {}).get("final_answer")
+    if not final_answer:
+        return Evaluation(name="expected_terms", value=0.0, comment="no final_answer produced", data_type="NUMERIC")
+    expected = ExpectedOutput.model_validate(expected_output or {})
+    answer = final_answer.lower()
+    missing = [term for term in expected.must_include_terms if term.lower() not in answer]
+    forbidden = [phrase for phrase in expected.must_not_contain if phrase.lower() in answer]
+    check_count = len(expected.must_include_terms) + len(expected.must_not_contain)
+    if not check_count:
+        return Evaluation(name="expected_terms", value=1.0, comment="no term checks defined", data_type="NUMERIC")
+    parts = []
+    if missing:
+        parts.append("missing: " + ", ".join(missing))
+    if forbidden:
+        parts.append("forbidden found: " + ", ".join(forbidden))
+    return Evaluation(
+        name="expected_terms",
+        value=(check_count - len(missing) - len(forbidden)) / check_count,
+        comment="; ".join(parts) or "all term checks passed",
+        data_type="NUMERIC",
     )
 
 
@@ -145,7 +178,22 @@ def score_verdict(verdict: QualityVerdict, criteria: list[dict], minimum_total: 
     )
 
 
-def _build_rubric_prompt(question: str, final_answer: str, criteria: list[dict]) -> str:
+def _build_reference_block(expected: ExpectedOutput | None) -> str:
+    if expected is None:
+        return ""
+    sections = []
+    if expected.must_cover:
+        points = "\n".join(f"- {point.description}" for point in expected.must_cover)
+        sections.append(f"Key points a complete answer covers (reference for key_point_coverage):\n{points}")
+    if expected.scoring_hints:
+        hints = "\n".join(f"- {hint}" for hint in expected.scoring_hints)
+        sections.append(f"Scoring hints:\n{hints}")
+    return "".join(f"{section}\n\n" for section in sections)
+
+
+def _build_rubric_prompt(
+    question: str, final_answer: str, criteria: list[dict], expected: ExpectedOutput | None = None
+) -> str:
     criteria_text = "\n\n".join(
         f"- {c['id']} ({c['name']}, score 0-{c['max_score']}): {c['description'].strip()}\n"
         + "\n".join(f"    {score}: {desc}" for score, desc in c["scoring_guide"].items())
@@ -163,7 +211,7 @@ Question: {question}
 Answer:
 {final_answer}
 
-Criteria:
+{_build_reference_block(expected)}Criteria:
 {criteria_text}
 
 For each criterion, first write your reasoning (point at the parts of the answer that justify the score), then the score, then your confidence: "low" if you cannot judge it reliably, otherwise "high".
@@ -178,13 +226,16 @@ async def run_quality_judge(
     final_answer: str,
     criteria: list[dict],
     judge_model: str | None,
+    expected: ExpectedOutput | None = None,
 ) -> QualityVerdict | None:
     """Ask an LLM judge to score final_answer against quality_criteria.
 
     The judge is prompted for a QualityVerdict (reasoning → score → confidence
-    per criterion) and its response is validated against that model. The
+    per criterion) and its response is validated against that model. When the
+    dataset item's `expected` is given, its key points and scoring hints are
+    added to the prompt as the judge's reference. The
     `ChatLiteLLM` client is used without `.with_structured_output()`: the
-    default local backends (llama.cpp / Ollama via LiteLLM) don't reliably
+    default local backends (llama.cpp / Unsloth Studio via LiteLLM) don't reliably
     support tool-calling-based structured output, so the schema is enforced by
     validation instead — see PLAN.md Phase 5b.
 
@@ -195,7 +246,7 @@ async def run_quality_judge(
         infrastructure failure, not a quality signal.
     """
     llm = build_llm(NodeLLMConfig(model=judge_model)) if judge_model else build_llm()
-    prompt = _build_rubric_prompt(question, final_answer, criteria)
+    prompt = _build_rubric_prompt(question, final_answer, criteria, expected)
     try:
         response = await llm_invoke_with_retry(llm, [SystemMessage(content=prompt)], _JUDGE_CONFIG)
     except LLMError as exc:
@@ -219,12 +270,13 @@ def make_quality_score_evaluator(criteria: list[dict], judge_model: str | None, 
     check_rubric_matches_verdict(criteria)
 
     async def evaluator(*, output: dict | None, expected_output: Any = None, **kwargs: Any) -> Evaluation:
-        _ = expected_output, kwargs
+        _ = kwargs
         out = output or {}
         final_answer = out.get("final_answer")
         if not final_answer:
             return Evaluation(name="quality_score", value=0.0, comment="no final_answer produced", data_type="NUMERIC")
-        verdict = await run_quality_judge(out.get("question", ""), final_answer, criteria, judge_model)
+        expected = ExpectedOutput.model_validate(expected_output) if expected_output else None
+        verdict = await run_quality_judge(out.get("question", ""), final_answer, criteria, judge_model, expected)
         if verdict is None:
             return Evaluation(name="quality_score", value=0.0, comment="quality judge call failed", data_type="NUMERIC")
         result = score_verdict(verdict, criteria, minimum_total)

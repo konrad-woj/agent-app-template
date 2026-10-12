@@ -327,6 +327,8 @@ uv run python evals/run.py node_eval
 uv run task redteam                                          # = evals/run.py guardrail_redteam
 uv run python evals/guardrail_redteam.py --include-multiturn  # script directly for its extra flags
 
-# HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional)
+# HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional).
+# Scores evals/datasets/sample.yaml's research questions with the LLM quality judge, the
+# deterministic expected_terms check, trace assertions, turn count and plan approval (Phase 7).
 uv run task experiment                                       # = evals/run.py exp_baseline
 ```

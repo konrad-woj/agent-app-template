@@ -1,5 +1,4 @@
-# Scoring rubric — see evals/datasets/sample.yaml for a note on this file's
-# "pre-sales proposal" framing vs. the actually-implemented research-assistant agent.
+# Scoring rubric for the research assistant's final answers.
 #
 # TWO evaluation layers:
 #
@@ -10,12 +9,13 @@
 #                        max_score values here MUST match QualityVerdict's fields
 #                        and scales (checked at load time by
 #                        evals.evaluators.check_rubric_matches_verdict).
-#                        NOT read by the Reflection critic subgraph
-#                        (app/graph/nodes/subgraphs/reflection.py) — that node
-#                        reviews research answers, so it scores its own criteria
-#                        (relevance/completeness/accuracy/clarity) with the same
-#                        per-criterion verdict models.
-#                        Proposal passes when total >= minimum_total AND every
+#                        The judge also sees each dataset item's must_cover key
+#                        points and scoring_hints as its reference.
+#                        Deliberately different from the Reflection critic's
+#                        criteria (app/graph/nodes/subgraphs/reflection.py), so
+#                        the eval doesn't grade with the rubric the agent already
+#                        optimised against.
+#                        An answer passes when total >= minimum_total AND every
 #                        per-criterion minimum is met — computed in code from the
 #                        scores, never taken from the judge.
 #
@@ -34,86 +34,85 @@
 #
 # Why 0–4 for some criteria and 0–2 for others (PLAN.md Phase 5b): use 0–4 when
 # the evidence is enumerable — you can point at sentences and count them
-# (stack_alignment, pain_point_coverage, specificity). Use 0–2 when the criterion
-# is inherently holistic (feasibility, risk_acknowledgment). Coarse-but-not-binary
+# (key_point_coverage, factual_accuracy, specificity). Use 0–2 when the criterion
+# is inherently holistic (focus, uncertainty_handling). Coarse-but-not-binary
 # scales give LLM judges the best agreement with humans; don't widen them.
 # Changing a max_score here also means changing evals/models.py:QualityVerdict.
 
 quality_criteria:
 
-  - id: stack_alignment
-    name: Stack Alignment
+  - id: key_point_coverage
+    name: Key Point Coverage
     description: >
-      The proposal references and integrates with the prospect's stated tech stack.
-      Proposed additions are compatible with existing components; no incompatible
-      technology is introduced without a migration path.
+      The answer covers the key points listed in the reference for this question.
+      A point counts only when the answer states it (or an equivalent), not when
+      it merely mentions a related keyword.
     max_score: 4
     scoring_guide:
-      0: No mention of the prospect's stack; reads like a generic template.
-      1: Mentions at least one stack component but proposes incompatible additions.
-      2: References some stack components; additions are compatible but integration is not described.
-      3: References most stack components; additions are compatible and integration points are named.
-      4: Deep integration specified for each layer; migration or adoption path given.
+      0: None of the reference key points are covered.
+      1: About a quarter of the key points are covered.
+      2: About half of the key points are covered.
+      3: Most key points are covered; one is missing or only gestured at.
+      4: Every key point is covered explicitly.
     per_criterion_minimum: 3
 
-  - id: pain_point_coverage
-    name: Pain Point Coverage
+  - id: factual_accuracy
+    name: Factual Accuracy
     description: >
-      Every pain point listed by the prospect is explicitly addressed with a
-      concrete technical response.  Vague acknowledgement ("we can help with X")
-      does not count — the proposal must explain HOW.
+      The answer's factual claims (names, dates, figures, causal statements) are
+      correct — consistent with the reference key points and with well-established
+      knowledge. Count the claims that are wrong or misleading.
     max_score: 4
     scoring_guide:
-      0: No pain points addressed.
-      1: At least one pain point addressed; others ignored.
-      2: Most pain points addressed; at least one ignored or only acknowledged.
-      3: All pain points addressed but one or more only at a surface level.
-      4: All pain points addressed with specific technical mechanisms.
+      0: The central claims are wrong.
+      1: Several significant errors; the answer would mislead a reader.
+      2: One significant error, or several minor ones.
+      3: Only a minor slip (e.g. an imprecise date or figure); nothing misleading.
+      4: No factual errors found.
     per_criterion_minimum: 3
 
   - id: specificity
-    name: Technical Specificity
+    name: Specificity
     description: >
-      The proposal names specific technologies, libraries, APIs, or patterns
-      (e.g. "pgvector for ANN search", "OR-Tools for VRP") rather than generic
-      phrases ("use a machine learning model", "add an API layer").
+      The answer uses concrete names, dates, figures, and mechanisms rather than
+      generic statements ("many factors contributed", "experts agree").
     max_score: 4
     scoring_guide:
-      0: Entirely generic; could apply to any company in any industry.
-      1: One or two named technologies but rest is vague.
-      2: About half the recommendations name a specific technology or pattern.
-      3: Most recommendations are specific; a few remain generic.
-      4: Every recommendation is specific and justified.
-    per_criterion_minimum: 3
+      0: Entirely generic; could answer almost any question on the topic.
+      1: One or two concrete details; the rest is vague.
+      2: About half of the statements are backed by concrete detail.
+      3: Most statements are concrete; a few remain generic.
+      4: Every substantive statement is concrete and precise.
+    per_criterion_minimum: 2
 
-  - id: feasibility
-    name: Feasibility
+  - id: focus
+    name: Focus
     description: >
-      The proposal is realistic given the prospect's stated team size, budget
-      signals, and existing architecture.  Over-engineered solutions that require
-      a full rewrite or large new teams score low.
+      The answer addresses the question that was asked, without padding,
+      off-topic digressions, or restating the question at length.
     max_score: 2
     scoring_guide:
-      0: Requires resources clearly beyond the prospect's constraints.
-      1: Feasible in principle but ignores one or more stated constraints.
-      2: Explicitly scoped to the prospect's constraints; incremental path shown.
+      0: Mostly answers a different question or is dominated by filler.
+      1: Answers the question but with noticeable drift or padding.
+      2: Directly answers the question throughout.
     per_criterion_minimum: 1
 
-  - id: risk_acknowledgment
-    name: Risk and Trade-off Acknowledgment
+  - id: uncertainty_handling
+    name: Uncertainty Handling
     description: >
-      The proposal identifies at least one risk, limitation, or trade-off for
-      the recommended approach and states how to mitigate or monitor it.
+      Where the topic is contested or the evidence is limited, the answer says so
+      and presents the competing views; it does not present a disputed claim as
+      settled. On a settled topic, stating established facts plainly scores 2.
     max_score: 2
     scoring_guide:
-      0: No risks or trade-offs mentioned.
-      1: At least one risk mentioned but no mitigation given.
-      2: Key risks identified with concrete mitigations or monitoring strategies.
+      0: Presents contested or uncertain claims as settled fact.
+      1: Hints at uncertainty but doesn't say what is contested or why.
+      2: Calibrated — contested points and limits of the evidence are named where they exist.
     per_criterion_minimum: 1
 
 pass_policy:
-  # Proposal accepted when total score AND all per-criterion minimums are met.
-  minimum_total: 12          # out of 16 maximum (4+4+4+2+2) — same ~75% bar as the old 10/13
+  # Answer accepted when total score AND all per-criterion minimums are met.
+  minimum_total: 12          # out of 16 maximum (4+4+4+2+2)
   # Per-criterion minimums are declared inline above (per_criterion_minimum field).
 
   # The judge LLM outputs an evals.models.QualityVerdict:
@@ -129,16 +128,9 @@ pass_policy:
 # ---------------------------------------------------------------------------
 #
 # Each assertion is evaluated against the LangGraph checkpoint history and/or
-# final AgentState without calling an LLM.
-#
-# CORRECTED as part of Phase 5d (see PLAN.md): this section originally
-# referenced a "search_subgraph" / "searcher" fan-out and a "search_results"
-# state field that never shipped — the actual graph (app/graph/workflow.py)
-# replaced that early design with a single-node ReAct loop (react_researcher)
-# and has no such field in AgentState (app/graph/state.py). Node names and
-# state fields below now match the real graph. `resume_guard` was also added
-# to the flow between `planner` and `react_researcher` and is included in
-# ta_flow_all_nodes_executed accordingly.
+# final AgentState without calling an LLM. Node names and state fields match
+# app/graph/workflow.py and app/graph/state.py. `state_field` checks read the
+# FINAL state, so they can only assert what holds at the end of a run.
 #
 # Fields:
 #   id           — unique assertion ID (used in test reports)
@@ -183,17 +175,16 @@ trace_assertions:
     condition: node_executed
     expected: planner
 
-  # --- planner ---
+  # --- planner / plan_review ---
 
-  - id: ta_planner_emits_interrupt
-    node: planner
+  - id: ta_plan_review_emits_interrupt
+    node: plan_review
     description: >
-      On the first invocation, the planner must pause the graph (interrupt).
-      Some checkpoint's next must be exactly ("planner",) — the graph suspended
-      awaiting human approval.
+      The run must pause for human approval at plan_review, the only node that
+      calls interrupt(). Some checkpoint's next must be exactly ("plan_review",).
     check: checkpoint
     condition: graph_interrupted_at
-    expected: planner
+    expected: plan_review
 
   - id: ta_planner_plan_non_empty
     node: planner
@@ -204,7 +195,7 @@ trace_assertions:
     condition: non_empty_list
 
   - id: ta_planner_aborts_on_reject
-    node: planner
+    node: plan_review
     description: >
       When the human resumes with approve=false, status must be set to "aborted"
       and the graph must not proceed to resume_guard / react_researcher.
@@ -251,7 +242,7 @@ trace_assertions:
     node: react_researcher
     description: >
       The final message produced by react_researcher must have no tool_calls,
-      confirming the loop exited cleanly via tools_condition.
+      confirming the loop exited cleanly via _react_condition.
     check: messages
     condition: last_ai_message_has_no_tool_calls
 
@@ -266,14 +257,6 @@ trace_assertions:
     fields: [draft_answer]
     condition: min_length
     expected: 100
-
-  - id: ta_writer_status_set
-    node: writer
-    description: After writer runs, status must be "writing" or "reflecting".
-    check: state_field
-    fields: [status]
-    condition: one_of
-    expected: [writing, reflecting]
 
   # --- reflection_subgraph ---
 
@@ -342,13 +325,14 @@ trace_assertions:
     node: flow
     description: >
       Checkpoint history must contain at least one entry for each main node:
-      input_guard, planner, resume_guard, react_researcher, writer,
+      input_guard, planner, plan_review, resume_guard, react_researcher, writer,
       verify_subgraph, reflection_subgraph, output_guard.
     check: checkpoint
     condition: all_nodes_executed
     expected:
       - input_guard
       - planner
+      - plan_review
       - resume_guard
       - react_researcher
       - writer
