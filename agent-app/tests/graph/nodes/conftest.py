@@ -27,6 +27,7 @@ def base_state(
 ) -> AgentState:
     return {
         "messages": messages if messages is not None else [HumanMessage(content="test question")],
+        "question": "",
         "plan": plan if plan is not None else [],
         "plan_approved": plan_approved,
         "claims": claims if claims is not None else [],
@@ -35,6 +36,7 @@ def base_state(
         "draft_answer": draft_answer,
         "reflection_attempts": reflection_attempts,
         "reflection_passed": reflection_passed,
+        "reflection_low_confidence": [],
         "final_answer": final_answer,
         "status": status,
         "guard_reason": guard_reason,

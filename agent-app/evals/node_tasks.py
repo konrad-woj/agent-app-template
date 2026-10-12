@@ -8,8 +8,8 @@ task below with a mocked LLM and zero network calls).
 
 Each task function has the signature `async def task(*, item, **kwargs) -> dict`,
 matching the Langfuse `run_experiment` task contract (PLAN.md Phase 5d) so the same
-task shape works whether it's invoked directly in a unit test or later wired into
-`evals/run.py` (Phase 5e) to run against a real LLM for prompt/quality regression.
+task shape works whether it's invoked directly in a unit test or run against a real
+LLM for prompt/quality regression by evals/node_eval.py (`uv run python evals/run.py node_eval`).
 
 `item` is duck-typed: either a dataset-item-like object with an `.input` attribute
 (Langfuse's `DatasetItem`) or a plain dict with an `"input"` key (as loaded from the
@@ -74,6 +74,7 @@ def _agent_state(**overrides: Any) -> AgentState:
     """Build a minimal AgentState, defaulting every field a node might read via .get()."""
     state: AgentState = {
         "messages": [],
+        "question": "",
         "plan": [],
         "plan_approved": False,
         "claims": [],
@@ -82,6 +83,7 @@ def _agent_state(**overrides: Any) -> AgentState:
         "draft_answer": "",
         "reflection_attempts": 0,
         "reflection_passed": False,
+        "reflection_low_confidence": [],
         "final_answer": "",
         "status": "planning",
         "guard_reason": None,

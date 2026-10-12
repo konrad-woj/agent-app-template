@@ -174,18 +174,21 @@ def test_health(client: httpx.Client, suite: Suite) -> None:
     suite.check("GET /health returns {status: ok}", resp.json() == {"status": "ok"})
 
 
+# (name, request body, expected HTTP status). Also reused by evals/guardrail_redteam.py.
+INPUT_VALIDATION_CASES: list[tuple[str, dict[str, Any], int]] = [
+    ("blank message → 422", {"thread_id": "t", "message": "   "}, 422),
+    ("blank thread_id → 422", {"thread_id": "   ", "message": "hello"}, 422),
+    ("missing message → 422", {"thread_id": "t"}, 422),
+    ("missing thread_id → 422", {"message": "hello"}, 422),
+    ("message > 4096 chars → 422", {"thread_id": "t", "message": "x" * 4097}, 422),
+    ("thread_id > 128 chars → 422", {"thread_id": "x" * 129, "message": "hello"}, 422),
+]
+
+
 def test_input_validation(client: httpx.Client, suite: Suite) -> None:
     suite.section("Input validation — POST /v1/chat")
 
-    cases = [
-        ("blank message → 422", {"thread_id": "t", "message": "   "}, 422),
-        ("blank thread_id → 422", {"thread_id": "   ", "message": "hello"}, 422),
-        ("missing message → 422", {"thread_id": "t"}, 422),
-        ("missing thread_id → 422", {"message": "hello"}, 422),
-        ("message > 4096 chars → 422", {"thread_id": "t", "message": "x" * 4097}, 422),
-        ("thread_id > 128 chars → 422", {"thread_id": "x" * 129, "message": "hello"}, 422),
-    ]
-    for name, body, expected_status in cases:
+    for name, body, expected_status in INPUT_VALIDATION_CASES:
         resp, ms = post(client, "/v1/chat", body)
         suite.check(name, resp.status_code == expected_status, f"got {resp.status_code}", ms)
 

@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from app.exceptions import LLMServiceUnavailableError
 from app.graph.nodes.writer import make_writer_node
 from tests.graph.nodes.conftest import CONFIG, base_state, make_mock_llm
@@ -27,6 +29,22 @@ class TestWriterNode:
         assert result["draft_answer"] == raw
         assert result["claims"] == []
         assert result["status"] == "writing"
+
+    async def test_answers_the_turn_question_not_the_resume_message(self) -> None:
+        # After plan approval the newest HumanMessage is the resume text, not the question.
+        llm = make_mock_llm('{"answer": "a", "claims": []}')
+        node = make_writer_node(llm)
+        messages = [
+            HumanMessage(content="What caused the 2008 crisis?"),
+            AIMessage(content="plan"),
+            HumanMessage(content="yes please proceed"),
+        ]
+        state = base_state(messages=messages)
+        state["question"] = "What caused the 2008 crisis?"
+        await node(state, CONFIG)
+        human = llm.ainvoke.call_args.args[0][1]
+        assert "What caused the 2008 crisis?" in human.content
+        assert "yes please proceed" not in human.content
 
     async def test_dead_letter_on_llm_error(self) -> None:
         llm = MagicMock()

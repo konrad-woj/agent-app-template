@@ -70,7 +70,7 @@ If anything doesn't come up, check [Ports used](#ports-used) below for what shou
 | **Fan-out / Fan-in** | Inside `verify_subgraph` | `Send` API spawns parallel claim verifiers; `operator.add` reducer collects results |
 | **ReAct** | `react_researcher` | Model ↔ `ToolNode` loop; exits when model emits no `tool_calls` |
 | **Human-in-the-loop** | `plan_review` (plan generated + guarded by `planner`) | `interrupt()` pauses graph; resumed with `Command(resume=True/False)` |
-| **Reflection** | `reflection_subgraph` | Critic → Refiner loop until quality criteria are met |
+| **Reflection** | `reflection_subgraph` | Critic scores the draft per criterion (reasoning → score → confidence, 0–4 / 0–2 scales); pass/fail is computed from the scores in code; Refiner loops until it passes. Low-confidence criteria surface in `reflection_low_confidence` |
 | **MCP** | `react_researcher` (consumer) + `app/mcp/server.py` (server) | `fastmcp` exposes tools; `langchain-mcp-adapters` binds them to LangGraph |
 | **Guardrails** | `input_guard`, `resume_guard`, `output_guard` | Three-layer input check (regex → GLiGuard → LLM topic); resume message checked by dedicated node; two-layer output check (GLiGuard PII redaction → LLM grounding) |
 | **Dead letter** | `dead_letter` terminal node | Any unhandled node exception writes `DeadLetterInfo` to state and routes here instead of crashing |
@@ -303,14 +303,32 @@ uv run pytest tests/test_prompts.py
 # Node-level evals (Phase 5a) — one node factory at a time, no server/Postgres/MCP needed
 uv run pytest tests/evals/test_node_tasks.py
 
-# Eval harness unit tests (Phase 5d) — trace assertions, evaluators, dataset validation; zero network calls
-uv run pytest tests/evals/test_trace_assertions.py tests/evals/test_evaluators.py tests/evals/test_dataset_validation.py
+# Eval harness unit tests (Phase 5d/5e) — trace assertions, evaluators, dataset validation, run.py dispatch; zero network calls
+uv run pytest tests/evals/test_trace_assertions.py tests/evals/test_evaluators.py tests/evals/test_dataset_validation.py tests/evals/test_run.py
+
+# Guardrail red-team suite tests (Phase 5c) — runs the suite in-process against the real graph with a mock LLM
+uv run pytest tests/evals/test_guardrail_redteam.py
 
 # Smoke test (requires app + Postgres; LLM-dependent tests auto-skip if unreachable)
 uv run python evals/smoke_test.py
 uv run python evals/smoke_test.py --base-url http://localhost:8010  # custom port
 
-# HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional)
-uv run task experiment
-uv run python evals/run_experiment.py evals/configs/exp_baseline.yaml
+# Every config-driven eval goes through one entrypoint (Phase 5e): evals/run.py <config-name>
+# resolves evals/configs/<name>.yaml and dispatches on its `type:` (experiment | guardrail_redteam |
+# node_eval). An unknown name exits 2 and lists the available configs.
+uv run python evals/run.py exp_baseline
+
+# Node-level evals against a real LLM (Phase 5e; only the LLM backend needed, no app/Postgres)
+uv run task node-eval
+uv run python evals/run.py node_eval
+
+# Guardrail red-team suite (Phase 5c; requires app + Postgres). PASS/FAIL/REVIEW/INFO/ERROR per probe;
+# exits 1 on any FAIL or ERROR. Multi-turn resume-guard probes are opt-in (they run the full pipeline).
+uv run task redteam                                          # = evals/run.py guardrail_redteam
+uv run python evals/guardrail_redteam.py --include-multiturn  # script directly for its extra flags
+
+# HTTP-driven experiment (Phase 5d; requires a running app + Postgres; Langfuse upload is optional).
+# Scores evals/datasets/sample.yaml's research questions with the LLM quality judge, the
+# deterministic expected_terms check, trace assertions, turn count and plan approval (Phase 7).
+uv run task experiment                                       # = evals/run.py exp_baseline
 ```

@@ -7,6 +7,7 @@ evaluator a permanent no-op three layers downstream.
 
 import pytest
 
+from evals.models import ExpectedOutput
 from evals.run_experiment import _load_dataset, _validate_expected_outputs
 
 
@@ -17,10 +18,9 @@ class TestValidateExpectedOutputs:
                 "id": "case_1",
                 "input": {"messages": [{"content": "hello"}]},
                 "expected_output": {
-                    "must_address": [{"id": "pp1", "description": "x"}],
-                    "must_reference": ["Django"],
-                    "must_include_terms": ["embeddings"],
-                    "must_not_contain": ["contact sales"],
+                    "must_cover": [{"id": "kp1", "description": "x"}],
+                    "must_include_terms": ["subprime"],
+                    "must_not_contain": ["I cannot help with"],
                     "scoring_hints": ["hint"],
                 },
             }
@@ -32,7 +32,7 @@ class TestValidateExpectedOutputs:
             {
                 "id": "case_1",
                 "input": {"messages": [{"content": "hello"}]},
-                "expected_output": {"must_referencee": ["Django"]},  # typo'd field
+                "expected_output": {"must_coverr": [{"id": "kp1", "description": "x"}]},  # typo'd field
             }
         ]
         with pytest.raises(ValueError, match=r"fixture\.yaml.*case_1"):
@@ -43,7 +43,7 @@ class TestValidateExpectedOutputs:
             {
                 "id": "case_1",
                 "input": {"messages": [{"content": "hello"}]},
-                "expected_output": {"must_reference": "Django"},  # should be a list
+                "expected_output": {"must_include_terms": "subprime"},  # should be a list
             }
         ]
         with pytest.raises(ValueError):
@@ -66,4 +66,4 @@ class TestLoadDataset:
         assert len(items) == 5
         for item in items:
             assert "input" in item
-            assert "expected_output" in item
+            assert len(ExpectedOutput.model_validate(item["expected_output"]).must_cover) >= 3, item["id"]

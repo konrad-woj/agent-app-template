@@ -34,6 +34,7 @@ def _base_state(
 ) -> AgentState:
     return {
         "messages": [HumanMessage(content="test")],
+        "question": "",
         "plan": [],
         "plan_approved": False,
         "claims": [],
@@ -42,6 +43,7 @@ def _base_state(
         "draft_answer": "",
         "reflection_attempts": 0,
         "reflection_passed": False,
+        "reflection_low_confidence": [],
         "final_answer": "",
         "status": status,
         "guard_reason": None,

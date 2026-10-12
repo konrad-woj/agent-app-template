@@ -20,11 +20,12 @@
 - [MCP Server Startup](#mcp-server-startup)
 - [Key API Endpoints](#key-api-endpoints)
 - [Phases](#phases)
-  - [Phase 5 — Evals (remaining sub-phases)](#phase-5--evals-remaining-5b-rubric-judge-schema-5c-guardrail-red-team-suite-5e-unified-entrypoint)
-    - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence)
-    - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite)
-    - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy)
+  - [Phase 5 — Evals](#phase-5--evals--all-sub-phases-implemented)
+    - [Phase 5b — Structured rubric-judge schema](#phase-5b--structured-rubric-judge-schema-reasoning--score--confidence---implemented)
+    - [Phase 5c — Categorized adversarial guardrail suite](#phase-5c--categorized-adversarial-guardrail-suite---implemented)
+    - [Phase 5e — Unified eval entrypoint](#phase-5e--unified-eval-entrypoint-evalsrunpy---implemented)
   - [Phase 6 — Prompt Externalization (i18n-ready)](#phase-6--prompt-externalization-i18n-ready---implemented)
+  - [Phase 7 — Research-domain eval realignment](#phase-7--research-domain-eval-realignment---implemented)
 - [Dependencies](#dependencies)
 - [README.md Guide Sections](#readmemd-guide-sections)
 - [LangGraph Studio Config](#langgraph-studio-config-langgraphjson)
@@ -36,7 +37,7 @@
 
 ## Context
 
-`agent-lib` already has a skeleton with Postgres checkpointing and time-travel tests. The goal is to create `agent-app/` as a best-practice, educational FastAPI service that sits alongside `churn-app/` and shows the full LangGraph feature set: time-travel, interrupts, async nodes, subgraphs, and SSE token streaming. LiteLLM + Ollama is the default LLM backend. The project informs structural patterns only (node factories, interrupt/resume flow, eval framework shape) — all business logic is original.
+`agent-lib` already has a skeleton with Postgres checkpointing and time-travel tests. The goal is to create `agent-app/` as a best-practice, educational FastAPI service that sits alongside `churn-app/` and shows the full LangGraph feature set: time-travel, interrupts, async nodes, subgraphs, and SSE token streaming. LiteLLM against a local Unsloth Studio / llama.cpp server is the default LLM backend. The project informs structural patterns only (node factories, interrupt/resume flow, eval framework shape) — all business logic is original.
 
 **Quality bar**: Production-grade code (type hints everywhere, async-first, structured logging via the custom `logger` package (`get_logger(__name__)` + `configure_logging()` called once in lifespan — never stdlib `logging`), proper error hierarchy, Pydantic validation at boundaries) with deliberately simple business logic — the research assistant domain is a vehicle to demonstrate LangGraph features cleanly.
 
@@ -69,21 +70,29 @@ agent-app/
 ├── PLAN.md
 ├── langgraph.json
 ├── evals/
+│   ├── run.py                     # ✓ Phase 5e — single entrypoint: run.py <config-name>, dispatch on `type:`
 │   ├── smoke_test.py              # ✓ live QA script: health, guards, interrupt, SSE, time-travel
 │   ├── node_tasks.py              # ✓ Phase 5a — node-level eval tier (registry of 6 task factories)
+│   ├── node_eval.py               # ✓ Phase 5e — runs node_tasks over datasets/node/ against a real LLM
+│   ├── guardrail_redteam.py       # ✓ Phase 5c — categorized adversarial guard suite
 │   ├── trace_assertions.py        # ✓ Phase 5d — deterministic condition-dispatch engine
-│   ├── evaluators.py              # ✓ Phase 5d — quality/trace/turns/plan-approved evaluators
-│   ├── models.py                  # ✓ Phase 5d — ExpectedOutput + provisional RubricJudgeVerdict
+│   ├── evaluators.py              # ✓ Phase 5d/5b/7 — quality (QualityVerdict)/expected-terms/trace/turns/plan-approved evaluators
+│   ├── models.py                  # ✓ Phase 5d/5b/7 — ExpectedOutput + QualityVerdict
 │   ├── run_experiment.py          # ✓ Phase 5d — HTTP-driven experiment runner
 │   ├── create_dataset.py          # ✓ Phase 5d — optional Langfuse dataset sync
 │   ├── configs/
-│   │   ├── exp_baseline.yaml
-│   │   ├── node_eval.yaml         # provisional — Phase 5e will define the authoritative schema
-│   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions
+│   │   ├── exp_baseline.yaml      # type: experiment
+│   │   ├── guardrail_redteam.yaml # type: guardrail_redteam
+│   │   ├── node_eval.yaml         # type: node_eval
+│   │   └── scoring_rubric.yaml    # LLM quality criteria + deterministic trace assertions (not runnable)
 │   └── datasets/
-│       ├── sample.yaml            # 5 synthetic prospect profiles (domain-mismatch caveat — see Phase 5d)
+│       ├── sample.yaml            # ✓ Phase 7 — 5 research questions with reference key points
 │       └── node/                  # ✓ Phase 5a — one small dataset per node
 ├── tests/
+│   ├── evals/
+│   ├── graph/
+│   ├── guards/
+│   └── mcp/
 └── app/
     ├── __init__.py
     ├── __main__.py            # uv run python -m app
@@ -92,12 +101,21 @@ agent-app/
     ├── models.py              # Request/response schemas
     ├── dependencies.py        # get_graph() FastAPI dependency
     ├── exceptions.py          # LLMError hierarchy
-    ├── routers.py             # /v1/chat, /v1/chat/stream, /v1/threads/{id}/history, /v1/threads/{id}/replay
+    ├── auth.py                # verify_api_key dependency (enforced when AGENT_API_KEY is set)
+    ├── rate_limit.py          # slowapi limiter (enabled when AGENT_RATE_LIMIT is set)
+    ├── routers.py             # /v1/chat, /v1/chat/stream, /v1/threads/{id}/history, /v1/threads/{id}/replay, /health, /ready, /metrics/dead-letter
+    ├── guards/
+    │   ├── __init__.py
+    │   └── gliguard.py        # GLiGuardClient singleton + concurrency semaphore
+    ├── prompts/
+    │   ├── __init__.py
+    │   ├── loader.py          # ✓ Phase 6 — load_system / render_human / load_text
+    │   └── en/                # one directory per node; see Phase 6
     ├── mcp/
     │   ├── __init__.py
-    │   ├── __main__.py        # uv run python -m app.mcp.server → uvicorn app.mcp.server:mcp
-    │   └── server.py          # fastmcp server; web_search, fetch_url, fact_check tools
-    │                          # _validate_url() SSRF guard: literal IP + private hostname check
+    │   ├── __main__.py        # uv run python -m app.mcp
+    │   ├── server.py          # fastmcp server; web_search, fetch_url, fact_check tools
+    │   └── ssrf.py            # _validate_url() SSRF guard: literal IP + private hostname check
     └── graph/
         ├── __init__.py
         ├── state.py           # AgentState TypedDict
@@ -105,15 +123,21 @@ agent-app/
         ├── mcp_client.py      # fastmcp client factory; binds MCP tools for LangGraph
         └── nodes/
             ├── __init__.py
-            ├── _llm_invoke.py         # Centralised async LLM wrapper + error translation + build_llm() factory
+            ├── _llm_invoke.py         # Centralised async LLM wrapper + error translation + build_llm() + parse_structured()
             ├── _dead_letter.py        # DeadLetterInfo TypedDict + with_dead_letter decorator + dead_letter_node
+            ├── _guard_layers.py       # run_sanitize_and_injection_check(): layers 1–2 shared by input/resume guards
+            ├── _guard_verdict.py      # GuardVerdict model for LLM topic / plan checks
+            ├── _messages.py           # get_turn_question() and last-human-message helpers
+            ├── _prompt_utils.py       # sanitize_user_text(): layer-1 regex sanitiser with Unicode folding
             ├── input_guard.py         # GUARDRAIL: regex → GLiGuard → LLM topic check
-            ├── planner.py             # Plans steps; guards plan; interrupt() for human approval
+            ├── planner.py             # planner node + plan_review node (the only interrupt())
             ├── resume_guard.py        # GUARDRAIL: guards resume message (regex → GLiGuard only)
             ├── react_researcher.py    # ReAct: model ↔ ToolNode loop (MCP tools)
             ├── writer.py              # Drafts final answer + extracts verifiable claims
             ├── output_guard.py        # GUARDRAIL: GLiGuard PII redaction → deterministic verification check
             └── subgraphs/
+                ├── __init__.py
+                ├── _rubric_models.py  # ✓ Phase 5b — CriterionVerdict / HolisticCriterionVerdict + helpers
                 ├── verification.py    # SUBGRAPH + FAN-OUT/FAN-IN: parallel claim verifiers via Send
                 └── reflection.py      # SUBGRAPH + REFLECTION: critic/refiner loop
 ```
@@ -193,6 +217,7 @@ flowchart TD
 ```python
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]  # supports RemoveMessage(id=...)
+    question: str  # this turn's sanitised question, set by input_guard
     plan: list[str]  # Planner output
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer
@@ -201,6 +226,7 @@ class AgentState(TypedDict):
     draft_answer: str  # writer output before reflection
     reflection_attempts: int  # reflection loop counter
     reflection_passed: bool
+    reflection_low_confidence: list[str]  # criteria the final critic pass flagged for human review
     final_answer: str  # output_guard-approved answer
     status: (
         str  # "planning"|"researching"|"writing"|"verifying"|"reflecting"|"done"|"aborted"|"blocked"|"dead_lettered"
@@ -212,7 +238,7 @@ class AgentState(TypedDict):
 **Key patterns**:
 - All nodes: `async def node(state: AgentState, config: RunnableConfig) -> dict`
 - Factory pattern: `make_planner_node(llm)` returns the async function
-- Interrupt: `planner` guards plan text then calls `interrupt({"plan": plan_text})`; resumed with `Command(resume=True/False)`; router adds resume message to state before resuming so `resume_guard` can inspect it
+- Interrupt: `planner` guards the plan text; the separate `plan_review` node then calls `interrupt({"plan": plan_steps})`; resumed with `Command(resume=True/False)`; router adds resume message to state before resuming so `resume_guard` can inspect it
 - Subgraphs: `verify_subgraph` and `reflection_subgraph` are compiled `StateGraph` instances wrapped by mapper nodes in `workflow.py`
 - Token streaming: `graph.astream_events(input, config, version="v2")` filtered to `on_chat_model_stream`
 - All LangGraph invocations are async: `await graph.ainvoke(...)`, `await graph.aget_state(...)`, `await graph.aupdate_state(...)`
@@ -287,57 +313,50 @@ false blocks from transient LLM errors.
 The model decides when it has gathered enough context. A hard ceiling of `MAX_REACT_STEPS` (default 10, configurable via `AGENT_MAX_REACT_STEPS`) exits the loop even if the model keeps emitting `tool_calls` — the writer runs with whatever context was gathered.
 
 MCP tools are loaded **once** in `lifespan()` before the graph is compiled, then injected
-into both the node closure and `ToolNode`. This keeps the MCP connection alive for the
-entire lifetime of the app and avoids reopening it on every node invocation.
+into both the node closure and `ToolNode`, so tool discovery doesn't repeat on every node
+invocation (each tool *call* still opens its own MCP session — see the MCP section below).
 
 ```python
 # nodes/react_researcher.py
-def make_react_researcher_node(llm_with_tools: BaseChatModel) -> Callable:
-    async def react_researcher(state: AgentState, config: RunnableConfig) -> dict:
-        response = await llm_with_tools.ainvoke(state["messages"], config)
-        return {"messages": [response], "react_steps": state["react_steps"] + 1}
-
-    return react_researcher
+def make_react_researcher_node_from_llm(llm: BaseChatModel, mcp_tools: list[BaseTool]) -> Callable:
+    return make_react_researcher_node(llm.bind_tools(mcp_tools))
 
 
-# workflow.py — tools loaded before compile; condition routes to "writer" not END
-def compile_graph(
-    checkpointer: AsyncPostgresSaver,
-    llm: BaseChatModel,
-    mcp_tools: list[BaseTool],
-) -> CompiledStateGraph:
-    llm_with_tools = llm.bind_tools(mcp_tools)
+def make_tools_node(mcp_tools: list[BaseTool]) -> ToolNode:
+    # awrap_tool_call bounds every call by AGENT_MCP_TOOL_CALL_TIMEOUT_SECONDS
+    return ToolNode(mcp_tools, awrap_tool_call=_timeout_bounded_tool_call, handle_tool_errors=True)
 
-    graph = StateGraph(AgentState)
-    graph.add_node("react_researcher", make_react_researcher_node(llm_with_tools))
-    graph.add_node("tools", ToolNode(mcp_tools))
 
-    # Cannot use the built-in tools_condition here: it returns "__end__" (not "writer")
-    # when there are no tool_calls.  A custom condition is required.
-    # Also enforces the MAX_REACT_STEPS ceiling to prevent runaway tool loops.
-    def react_condition(state: AgentState) -> Literal["tools", "writer"]:
-        last = state["messages"][-1]
-        ceiling_hit = state["react_steps"] >= settings.max_react_steps
-        return "tools" if getattr(last, "tool_calls", None) and not ceiling_hit else "writer"
+# workflow.py — module-level condition; routes to "writer", not END
+# Cannot use the built-in tools_condition: it returns "__end__" (not "writer") when there
+# are no tool_calls. Also enforces the AGENT_MAX_REACT_STEPS ceiling.
+def _react_condition(state: AgentState) -> Literal["tools", "writer"]:
+    last = state["messages"][-1]
+    ceiling_hit = state.get("react_steps", 0) >= settings.max_react_steps
+    return "tools" if getattr(last, "tool_calls", None) and not ceiling_hit else "writer"
 
-    graph.add_conditional_edges("react_researcher", react_condition)
-    graph.add_edge("tools", "react_researcher")
-    ...
-    return graph.compile(checkpointer=checkpointer)
+
+graph.add_node("react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools))
+graph.add_node("tools", make_tools_node(mcp_tools))
+graph.add_conditional_edges("react_researcher", _react_condition)
+graph.add_edge("tools", "react_researcher")
 
 
 # main.py lifespan — tools loaded once at startup; client has no async context manager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mcp_tools = await load_mcp_tools(settings.mcp_server_url)  # await — get_tools() is async
-    async with AsyncPostgresSaver.from_conn_string(settings.db_uri) as checkpointer:
+    gliguard = GLiGuardClient(settings.guard_model, settings.guard_device, settings.guard_max_concurrency)
+    await gliguard.aload(settings.guard_load_timeout_seconds, retries=settings.guard_load_retries)
+    async with AsyncConnectionPool(...) as pool:  # see "Postgres Checkpointer"
+        checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
-        app.state.graph = compile_graph(checkpointer, build_llm(), mcp_tools)
+        app.state.graph = compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs)
         yield
 ```
 
 ### Reflection (inside `reflection_subgraph`)
 
-The subgraph loops: `critic` scores the draft answer against criteria (relevance, completeness, grounding); if it fails, `refiner` improves the draft and the critic re-evaluates. The loop exits on quality pass **or when `reflection_attempts` reaches `MAX_REFLECTION_ATTEMPTS`** (default 5, configurable via `AGENT_MAX_REFLECTION_ATTEMPTS`). On ceiling hit the best draft is kept and `reflection_passed` is set to `False` — the output guard still runs.
+The subgraph loops: `critic` scores the draft answer per criterion (relevance and completeness 0–4, accuracy and clarity 0–2; reasoning → score → confidence — see Phase 5b), and pass/fail is computed from those scores in code; if it fails, `refiner` improves the draft and the critic re-evaluates. The loop exits on quality pass **or when `reflection_attempts` reaches `MAX_REFLECTION_ATTEMPTS`** (default 5, configurable via `AGENT_MAX_REFLECTION_ATTEMPTS`). On ceiling hit the best draft is kept and `reflection_passed` is set to `False` — the output guard still runs.
 
 `ReflectionState` uses short internal keys (`draft`, `passed`) that differ from `AgentState`
 (`draft_answer`, `reflection_passed`). Because LangGraph only auto-merges **matching** keys,
@@ -346,31 +365,33 @@ a wrapper node is required — there is no `input_schema`/`output_schema` shortc
 ```python
 # subgraphs/reflection.py — internal state
 class ReflectionState(TypedDict):
+    question: str
     draft: str
     critique: str
     reflection_attempts: int
     passed: bool
+    low_confidence: list[str]  # criteria the critic was unsure about (Phase 5b)
 
 
-MAX_REFLECTION_ATTEMPTS = settings.max_reflection_attempts  # default 5
-
-
-def should_refine(state: ReflectionState) -> Literal["refiner", END]:
-    ceiling_hit = state["reflection_attempts"] >= MAX_REFLECTION_ATTEMPTS
-    return END if state["passed"] or ceiling_hit else "refiner"
+def should_refine(state: ReflectionState) -> Literal["refiner", "__end__"]:
+    ceiling_hit = state["reflection_attempts"] >= settings.max_reflection_attempts  # default 5
+    return "__end__" if state["passed"] or ceiling_hit else "refiner"
 
 
 reflection_subgraph = reflection_graph.compile()
 
 
-# workflow.py — wrapper maps parent keys ↔ subgraph keys
+# workflow.py — wrapper maps parent keys ↔ subgraph keys (built by _make_run_reflection(llm))
+@with_dead_letter("reflection_subgraph")
 async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
     result = await reflection_subgraph.ainvoke(
         {
+            "question": get_turn_question(state),
             "draft": state["draft_answer"],
             "critique": "",
             "reflection_attempts": state["reflection_attempts"],
             "passed": False,
+            "low_confidence": [],
         },
         config,
     )
@@ -378,6 +399,7 @@ async def run_reflection(state: AgentState, config: RunnableConfig) -> dict:
         "final_answer": result["draft"],
         "reflection_passed": result["passed"],
         "reflection_attempts": result["reflection_attempts"],
+        "reflection_low_confidence": result["low_confidence"],
     }
 
 
@@ -488,14 +510,17 @@ def with_dead_letter(node_name: str) -> Callable:
         async def wrapper(state: AgentState, config: RunnableConfig) -> dict:
             try:
                 return await fn(state, config)
+            except GraphInterrupt:
+                raise  # interrupt() signal — must propagate so the runtime can suspend the graph
             except Exception as exc:
+                dead_letter_counter.increment(node_name)
                 return {
                     "dead_letter": DeadLetterInfo(
                         failed_node=node_name,
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         traceback=traceback.format_exc(),
-                        timestamp=datetime.utcnow().isoformat(),
+                        timestamp=datetime.now(tz=UTC).isoformat(),
                     ),
                     "status": "dead_lettered",
                 }
@@ -530,9 +555,10 @@ graph.add_conditional_edges("verify_subgraph", after("reflection_subgraph"))
 ```
 
 Nodes decorated with `@with_dead_letter("node_name")`: `input_guard`, `planner`, `plan_review`,
-`resume_guard`, `react_researcher` (and its `ToolNode` wrapper), `writer`, `output_guard`,
-and the two subgraph wrapper nodes (`verify_subgraph`, `reflection_subgraph` in workflow.py)
+`resume_guard`, `react_researcher`, `writer`, `output_guard`, and the two subgraph wrapper nodes (`verify_subgraph`, `reflection_subgraph` in workflow.py)
 so internal subgraph exceptions also route to `dead_letter` instead of crashing the invocation.
+The `tools` `ToolNode` is not decorated: `handle_tool_errors=True` turns a failing or timed-out
+tool call into an error `ToolMessage` the model can react to.
 
 ### Circuit Breakers & Loop Guards
 
@@ -553,22 +579,26 @@ gathered — no tool results are lost.
 
 #### 3 — LLM call timeout (`AGENT_LLM_TIMEOUT_SECONDS`, default `60`)
 
-`_llm_invoke.py` wraps every `llm.ainvoke` / `llm.astream` call in `asyncio.wait_for` with
-`timeout=settings.llm_timeout_seconds`. On expiry, `asyncio.TimeoutError` is caught and
-re-raised as `LLMServiceUnavailableError` so the dead-letter decorator picks it up.
+`_llm_invoke.py` wraps every `llm.ainvoke` call in `asyncio.wait_for`. The timeout is read from
+`llm.metadata["timeout_seconds"]` (set by `build_llm()` from the per-node override or
+`settings.llm_timeout_seconds`). On expiry, `TimeoutError` is re-raised as
+`LLMServiceUnavailableError` so the dead-letter decorator picks it up.
 
 ```python
 # nodes/_llm_invoke.py
 async def llm_invoke(llm: BaseChatModel, messages: list[AnyMessage], config: RunnableConfig) -> AnyMessage:
+    timeout = (llm.metadata or {}).get("timeout_seconds", settings.llm_timeout_seconds)
     try:
-        return await asyncio.wait_for(
-            llm.ainvoke(messages, config),
-            timeout=settings.llm_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        raise LLMServiceUnavailableError("LLM call timed out")
-    except Exception as exc:
-        raise _translate(exc)
+        return await asyncio.wait_for(llm.ainvoke(messages, config), timeout=timeout)
+    except TimeoutError as err:
+        raise LLMServiceUnavailableError(f"LLM call timed out after {timeout}s") from err
+    except LLMError:
+        raise
+    except Exception as err:
+        translated = _translate_exception(err)  # None for unknown errors → propagate unmasked
+        if translated is not None:
+            raise translated from err
+        raise
 ```
 
 #### 4 — Global pipeline step cap (`AGENT_MAX_PIPELINE_STEPS`, default `50`)
@@ -594,17 +624,18 @@ are re-raised immediately.
 ```python
 # nodes/_llm_invoke.py
 async def llm_invoke_with_retry(llm: BaseChatModel, messages: list[AnyMessage], config: RunnableConfig) -> AnyMessage:
-    last_exc: Exception | None = None
-    for attempt in range(settings.llm_max_retries + 1):
+    max_retries = (llm.metadata or {}).get("max_retries", settings.llm_max_retries)
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
         try:
             return await llm_invoke(llm, messages, config)
-        except (LLMRateLimitError, LLMServiceUnavailableError) as exc:
-            last_exc = exc
-            wait = min(2**attempt, 30)
-            await asyncio.sleep(wait)
+        except (LLMRateLimitError, LLMServiceUnavailableError) as err:
+            last_err = err
+            if attempt < max_retries:
+                await asyncio.sleep(min(2**attempt, 30))
         except LLMError:
             raise
-    raise last_exc  # type: ignore[misc]
+    raise last_err  # type: ignore[misc]
 ```
 
 #### 6 — MCP tool call timeout (`AGENT_MCP_TOOL_CALL_TIMEOUT_SECONDS`, default `30`)
@@ -613,7 +644,8 @@ The verifier node in `verify_subgraph` wraps `fact_check_tool.ainvoke(...)` in `
 (same pattern as the LLM timeout above). A hung or failing MCP call raises instead of blocking
 the branch indefinitely; the `verify_subgraph`/`reflection_subgraph` wrapper nodes in
 `workflow.py` are wrapped with `@with_dead_letter` so the failure routes to `dead_letter`
-instead of crashing the whole graph invocation.
+instead of crashing the whole graph invocation. ReAct tool calls get the same bound through
+`ToolNode(awrap_tool_call=...)`; there a timeout becomes an error `ToolMessage` instead.
 
 #### 7 — GLiGuard concurrency cap (`AGENT_GUARD_MAX_CONCURRENCY`, default `4`)
 
@@ -624,9 +656,6 @@ means N concurrent forward passes through that single model, each with its own a
 memory. `GLiGuardClient` holds an `asyncio.Semaphore(guard_max_concurrency)`; both async
 check methods acquire it before dispatching to a thread, so excess concurrent calls queue
 instead of piling up unbounded (a real risk of exhausting GPU VRAM when `AGENT_GUARD_DEVICE=cuda`).
-
-All limits above are also exposed to the eval runner so experiments can be reproduced with
-different ceilings without redeploying.
 
 ---
 
@@ -656,7 +685,7 @@ Routes to `END: blocked` (sets `status="blocked"`, `guard_reason=...`) on any fa
 
 | Model | Params | Package | German | Threat scope | Notes |
 |---|---|---|---|---|---|
-| **GLiGuard** (`fastino/gliguard-LLMGuardrails-300M`) ✓ **chosen** | 300M | `gliner2[local]` | Yes (100+ langs, mmBERT) | Prompt + response safety, toxicity (multi-label), jailbreak, PII, 13+ categories | Apache 2.0; evaluates both input and output; 16x faster than comparable accuracy; CPU-optimized |
+| **GLiGuard** (`fastino/gliguard-LLMGuardrails-300M`) ✓ **chosen** | 300M | `gliner2` | Yes (100+ langs, mmBERT) | Prompt + response safety, toxicity (multi-label), jailbreak, PII, 13+ categories | Apache 2.0; evaluates both input and output; 16x faster than comparable accuracy; CPU-optimized |
 | Llama Prompt Guard 2 86M (`meta-llama/Llama-Prompt-Guard-2-86M`) | 86M | `transformers` | Yes (8 langs) | Prompt injection + jailbreak (binary only) | Llama 4 license; AUC 0.998, 97.5% recall @ 1% FPR; no response-side classification |
 | Llama Prompt Guard 2 22M (`meta-llama/Llama-Prompt-Guard-2-22M`) | 22M | `transformers` | Yes (8 langs) | Prompt injection + jailbreak (binary only) | Llama 4 license; 19.3ms latency; best for edge/mobile; AUC 0.995 |
 | Llama Guard 3 1B (`meta-llama/Llama-Guard-3-1B`) | 1B | `transformers` | Yes (8 langs) | 13 MLCommons harm categories, prompt + response | Llama 3.2 license; best breadth for general content safety; F1 0.899 |
@@ -667,24 +696,10 @@ GLiGuard was chosen because it covers both prompt and response classification, s
 
 ## LLM Client (LiteLLM + Unsloth / llama.cpp)
 
-`build_llm()` lives in `nodes/_llm_invoke.py` alongside the retry/timeout wrappers so all LLM concerns are co-located.
-
-```python
-# nodes/_llm_invoke.py
-from langchain_community.chat_models import ChatLiteLLM
-
-
-def build_llm() -> ChatLiteLLM:
-    # Qwen3 thinking mode: enable_thinking must go through model_kwargs so
-    # LiteLLM forwards it to the llama.cpp/Unsloth server.  ChatLiteLLM's own
-    # `thinking=` kwarg is Anthropic-specific and has no effect here.
-    return ChatLiteLLM(
-        model=settings.llm_model,
-        api_base=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model_kwargs={"enable_thinking": settings.llm_thinking},
-    )
-```
+`build_llm()` lives in `nodes/_llm_invoke.py` alongside the retry/timeout wrappers so all LLM
+concerns are co-located. `ChatLiteLLM` comes from `langchain_litellm`. Qwen3 thinking mode goes
+through `model_kwargs={"enable_thinking": ...}` so LiteLLM forwards it to the llama.cpp/Unsloth
+server; `ChatLiteLLM`'s own `thinking=` kwarg is Anthropic-specific and has no effect here.
 
 Config: `AGENT_LLM_MODEL` (default `openai/unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`), `AGENT_LLM_BASE_URL` (default `http://127.0.0.1:8888/v1`), `AGENT_LLM_THINKING` (default `false`), `AGENT_LLM_TIMEOUT_SECONDS` (default `60`), `AGENT_LLM_MAX_RETRIES` (default `3`), `AGENT_MAX_REFLECTION_ATTEMPTS` (default `5`), `AGENT_MAX_REACT_STEPS` (default `10`).
 
@@ -692,13 +707,10 @@ Default model is [Unsloth Qwen3.6](https://unsloth.ai/docs/models/qwen3.6): MLX 
 
 ### Node-Level LLM Config
 
-Different nodes have different latency/quality trade-offs. Guards want a fast, cheap call; planners and critics benefit from thinking mode. `NodeLLMConfig` is a dataclass of optional overrides; any field left `None` falls back to the global `Settings` value. `build_llm(override)` is the single construction point — retry/timeout logic in `llm_invoke_with_retry` is unchanged.
+Different nodes have different latency/quality trade-offs: classification-style calls want deterministic output, drafting benefits from a little variety. `NodeLLMConfig` is a dataclass of optional overrides; any field left `None` falls back to the global `Settings` value. `build_llm(override)` is the single construction point.
 
 ```python
 # nodes/_llm_invoke.py
-from dataclasses import dataclass
-
-
 @dataclass
 class NodeLLMConfig:
     model: str | None = None
@@ -710,59 +722,71 @@ class NodeLLMConfig:
 
 def build_llm(override: NodeLLMConfig | None = None) -> ChatLiteLLM:
     cfg = override or NodeLLMConfig()
+    timeout = cfg.timeout_seconds if cfg.timeout_seconds is not None else settings.llm_timeout_seconds
+    max_retries = cfg.max_retries if cfg.max_retries is not None else settings.llm_max_retries
+    thinking = cfg.thinking if cfg.thinking is not None else settings.llm_thinking
     return ChatLiteLLM(
         model=cfg.model or settings.llm_model,
         api_base=settings.llm_base_url,
         api_key=settings.llm_api_key,
         temperature=cfg.temperature,  # None → provider default
-        model_kwargs={"enable_thinking": cfg.thinking if cfg.thinking is not None else settings.llm_thinking},
+        streaming=True,  # required for astream_events to emit on_chat_model_stream chunks
+        model_kwargs={"enable_thinking": thinking},
+        metadata={"timeout_seconds": timeout, "max_retries": max_retries},
     )
 ```
 
-`_build_graph` and `compile_graph` accept a `node_llm_configs: dict[str, NodeLLMConfig] | None` map. Nodes absent from the map receive the default LLM. LLM instances are deduplicated — nodes sharing the same resolved config reuse the same object.
+`compile_graph` accepts a `node_llm_configs: dict[str, NodeLLMConfig] | None` map and builds one LLM instance per key; nodes absent from the map share the default LLM.
 
 ```python
 # workflow.py
 def _build_graph(
     default_llm: BaseChatModel,
     mcp_tools: list[BaseTool],
-    node_llms: dict[str, BaseChatModel] | None = None,
+    gliguard: GLiGuardClient | _NullGuard,
+    fact_check_tool: BaseTool | None = None,
+    node_llms: Mapping[str, BaseChatModel] | None = None,
 ) -> StateGraph:
     nlm = node_llms or {}
-    graph.add_node("input_guard", make_input_guard_node(nlm.get("input_guard", default_llm)))
-    graph.add_node("planner", make_planner_node(nlm.get("planner", default_llm)))
+    graph.add_node("input_guard", make_input_guard_node(nlm.get("input_guard", default_llm), gliguard))
+    graph.add_node("planner", make_planner_node(nlm.get("planner", default_llm), gliguard))
+    graph.add_node("plan_review", make_plan_review_node())
+    graph.add_node("resume_guard", make_resume_guard_node(gliguard))
     graph.add_node(
         "react_researcher", make_react_researcher_node_from_llm(nlm.get("react_researcher", default_llm), mcp_tools)
     )
     graph.add_node("writer", make_writer_node(nlm.get("writer", default_llm)))
-    graph.add_node("output_guard", make_output_guard_node(nlm.get("output_guard", default_llm)))
-    # reflection subgraph receives its own LLM via build_reflection_subgraph(llm)
+    graph.add_node("verify_subgraph", _make_run_verification(nlm.get("verification", default_llm), fact_check_tool))
     graph.add_node("reflection_subgraph", _make_run_reflection(nlm.get("reflection", default_llm)))
+    graph.add_node("output_guard", make_output_guard_node(gliguard))  # no LLM
     ...
 
 
 def compile_graph(
-    checkpointer: AsyncPostgresSaver,
+    checkpointer: BaseCheckpointSaver,
     mcp_tools: list[BaseTool],
+    gliguard: GLiGuardClient,
     node_llm_configs: dict[str, NodeLLMConfig] | None = None,
 ) -> CompiledStateGraph:
     default_llm = build_llm()
+    fact_check_tool = next((t for t in mcp_tools if t.name == "fact_check"), None)
     node_llms = {name: build_llm(cfg) for name, cfg in (node_llm_configs or {}).items()}
-    return _build_graph(default_llm, mcp_tools, node_llms).compile(checkpointer=checkpointer)
+    return _build_graph(default_llm, mcp_tools, gliguard, fact_check_tool, node_llms).compile(checkpointer=checkpointer)
 ```
 
-`main.py` lifespan passes the default node config map. Guards use the default (fast, no thinking); planner, react_researcher, writer, and reflection nodes enable thinking if `AGENT_LLM_THINKING=true`.
+`main.py` lifespan passes a temperature-only map; thinking stays on the global `AGENT_LLM_THINKING` for every node.
 
 ```python
-# main.py lifespan — intent-declaring config map; adjust per deployment
+# main.py lifespan — adjust per deployment
 node_llm_configs = {
-    "planner": NodeLLMConfig(thinking=True),
-    "react_researcher": NodeLLMConfig(thinking=True),
-    "writer": NodeLLMConfig(thinking=True),
-    "reflection": NodeLLMConfig(thinking=True),
-    # input_guard and output_guard: default (no thinking, faster)
+    "input_guard": NodeLLMConfig(temperature=0.0),
+    "planner": NodeLLMConfig(temperature=0.0),
+    "react_researcher": NodeLLMConfig(temperature=0.0),
+    "writer": NodeLLMConfig(temperature=0.3),
+    "verification": NodeLLMConfig(temperature=0.0),
+    "reflection": NodeLLMConfig(temperature=0.2),
 }
-app.state.graph = compile_graph(checkpointer, mcp_tools, node_llm_configs)
+app.state.graph = compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs)
 ```
 
 `llm_invoke_with_retry` reads `timeout_seconds` and `max_retries` from the LLM instance's metadata rather than directly from `settings`, so per-node overrides flow through automatically.
@@ -811,13 +835,13 @@ The MCP server runs as a separate process (or in-process for tests):
 
 ```bash
 # standalone
-uv run python -m app.mcp.server          # serves on http://localhost:8001
+uv run python -m app.mcp                 # serves on http://localhost:8001 (AGENT_MCP_HOST / AGENT_MCP_PORT)
 
 # or via taskipy
 uv run task mcp
 ```
 
-Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
+Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001/mcp`).
 
 ---
 
@@ -831,12 +855,15 @@ Config: `AGENT_MCP_SERVER_URL` (default `http://localhost:8001`).
 | `POST` | `/v1/threads/{thread_id}/replay` | Re-invoke from a named checkpoint |
 | `GET` | `/health` | Liveness — static, no dependency checks |
 | `GET` | `/ready` | Readiness — checks GLiGuard loaded, Postgres reachable, MCP tools loaded |
+| `GET` | `/metrics/dead-letter` | In-process dead-letter counters (total + per node) |
+
+The `/v1/*` routes require `X-API-Key` when `AGENT_API_KEY` is set; `/health`, `/ready` and `/metrics/*` are unauthenticated.
 
 ---
 
 ## Phases
 
-### Phase 5 — Evals (remaining: 5b rubric-judge schema, 5c guardrail red-team suite, 5e unified entrypoint)
+### Phase 5 — Evals — all sub-phases implemented
 
 #### Context: why this phase was restructured
 
@@ -862,12 +889,36 @@ the same ideas later):
   ergonomics, not a correctness practice. Still adopted (5e) but labelled as a convention.
 
 Phase 5 was split into five sub-phases, ordered by leverage-per-effort. 5a (node-level
-eval tier) and 5d (harness-integrity fixes for `run_experiment.py`) have landed. The
-remaining sub-phases — 5b, 5c, 5e — can land in any order.
+eval tier), 5b (structured rubric judge), 5c (guardrail red-team suite), 5d
+(harness-integrity fixes for `run_experiment.py`) and 5e (unified entrypoint) have all landed;
+5a and 5d are summarised in the Target Layout and README rather than kept as sections here.
 
 ---
 
-#### Phase 5b — Structured rubric-judge schema (reasoning → score → confidence)
+#### Phase 5b — Structured rubric-judge schema (reasoning → score → confidence) — ✓ implemented
+
+**As built — deviation from the deliverables below.** The deliverables said to make the
+Reflection critic score against `QualityVerdict`. That rubric's criteria (stack_alignment,
+pain_point_coverage, …) describe a pre-sales proposal, while the critic reviews answers to
+general research questions, so 5b was split instead:
+- **Eval judge** (`evals/evaluators.py`): returns `evals.models.QualityVerdict` (the five
+  rubric criteria, 0–4 / 0–2). The judge is no longer asked for `total`/`passed`;
+  `score_verdict()` derives both from the scores and `pass_policy`.
+  `check_rubric_matches_verdict()` fails at load time if `scoring_rubric.yaml` and
+  `QualityVerdict` drift apart. Low-confidence criteria go into the score comment and
+  metadata (uploaded to Langfuse and written to the local report).
+- **Reflection critic** (`app/graph/nodes/subgraphs/reflection.py`): returns its own
+  `CriticVerdict` — relevance (0–4), completeness (0–4), accuracy (0–2), clarity (0–2) —
+  built from the same shared models in `app/graph/nodes/subgraphs/_rubric_models.py`.
+  The critic now receives the question, not just the draft. Pass/fail is computed in code
+  (every criterion at its minimum and total ≥ 9/12). Criteria below their minimum are
+  appended to the critique for the refiner. Low-confidence criteria propagate to
+  `AgentState.reflection_low_confidence`.
+- **Structured-output mechanism**: parse-and-validate against the Pydantic model, not
+  `.with_structured_output()` — the default local backends (llama.cpp / Unsloth Studio via LiteLLM)
+  don't reliably support tool-calling-based structured output. `parse_structured` now strips
+  a markdown code fence first; before this, a fenced critic response failed to parse and was
+  silently treated as a pass.
 
 **Why**: the current `scoring_rubric.yaml` `quality_criteria` block asks the critic LLM to
 free-form a JSON object matching a documented (but unenforced) shape. Two changes, both
@@ -935,17 +986,43 @@ independently corroborated by non-lab sources during the audit:
   lost the next time someone edits a threshold.
 
 **Tests**:
-- `tests/graph/nodes/subgraphs/test_reflection.py` — add cases asserting the critic's
-  structured output validates against `QualityVerdict`, and that a `confidence: "low"`
-  verdict is surfaced (not silently dropped) in whatever the critic returns to state.
+- `tests/graph/nodes/subgraphs/test_reflection.py` — the critic's structured output
+  validates against `CriticVerdict` (per the as-built split above), and a `confidence: "low"`
+  verdict is surfaced (not silently dropped) in what the critic returns to state.
 
-**Done when**: the critic's LLM call round-trips through `QualityVerdict` validation
-without manual JSON parsing, and `scoring_rubric.yaml`'s `pass_policy.minimum_total`
-matches the new max score.
+**Done when**: the critic's LLM call round-trips through `CriticVerdict` validation, the
+eval judge's through `QualityVerdict`, and `scoring_rubric.yaml`'s
+`pass_policy.minimum_total` matches the new max score.
 
 ---
 
-#### Phase 5c — Categorized adversarial guardrail suite
+#### Phase 5c — Categorized adversarial guardrail suite — ✓ implemented
+
+**As built.** `evals/guardrail_redteam.py` + `evals/configs/guardrail_redteam.yaml`
+(`uv run task redteam`). 22 single-turn probes across INPUT_VALIDATION, PROMPT_INJECTION,
+PERSONA_HIJACK and MISSING_GUARDS, plus 5 opt-in multi-turn probes (every
+RESUME_GUARD_BYPASS case and the output PII-redaction probe). Results are written to
+`evals/.runs/guardrail_redteam/<timestamp>.json`. Exits 1 on any FAIL/ERROR or on an
+empty selection. Notes:
+- **The homoglyph bypass was real** and is fixed: `sanitize_user_text` now matches markers
+  on a canonical form of the text (NFKC, angle-bracket lookalikes such as `⟨ ‹ 〈 ᐸ` folded
+  to `<`, Unicode format characters dropped). That catches fullwidth `＜system＞`, tags split
+  by zero-width characters, and U+E0000 tag-character smuggling. It switches to the
+  canonical text only when a marker is found, so benign Unicode (`x²`, `ﬁ`, emoji ZWJ
+  sequences) reaches the model unchanged.
+- **Layer attribution**: the API doesn't expose sanitised text, so layer-1 probes are
+  marker-only. A message that is empty after sanitising is blocked with a "sanitiser"
+  `guard_reason`. A block from a later layer counts as FAIL, because layer 1 was bypassed.
+- **Persona hijack** cases use a `validate_fn`: PASS if blocked, FAIL if any system prompt's
+  first line (read from `app/prompts/en`) or an injected canary shows up in the plan or
+  answer, otherwise REVIEW.
+- **"Broken guard flips PASS → FAIL"** is a pytest check (`tests/evals/test_guardrail_redteam.py`).
+  It runs the suite against the real compiled graph and router, with a mock LLM and an
+  in-memory checkpointer. Swapping the stub GLiGuard for `_NullGuard` flips
+  `pi_ignore_previous_instructions` from PASS to FAIL. Turning off the sanitiser's Unicode
+  folding flips `pi_fullwidth_homoglyph_tags` the same way.
+- **Not yet run against a live GLiGuard model + LLM.** Whether GLiGuard itself catches the
+  persona-hijack class is exactly what this suite answers on a real deployment.
 
 **Why**: `evals/smoke_test.py` today exercises exactly one probe per guard layer
 (`test_guard_layer1/2/3` — one regex case, one injection case, one off-topic case). A
@@ -1004,15 +1081,32 @@ suite. Guard against **silent zero-coverage**: if `categories` in the config res
 an empty test list, exit 1 rather than reporting a clean pass (same "fail closed on empty
 selection" principle 5d already applied to `run_experiment.py`, applied here specifically).
 
-**Done when**: `uv run python evals/run.py guardrail_redteam` (once 5e's dispatcher
-exists; standalone `uv run python evals/guardrail_redteam.py` until then) runs ≥15 probes
+**Done when**: `uv run python evals/run.py guardrail_redteam` runs ≥15 probes
 across ≥4 categories, catches the homoglyph bypass and persona-hijack cases explicitly,
 and a deliberately broken guard (e.g. temporarily disable GLiGuard in a test harness)
 flips at least one case from PASS to FAIL.
 
 ---
 
-#### Phase 5e — Unified eval entrypoint (`evals/run.py`)
+#### Phase 5e — Unified eval entrypoint (`evals/run.py`) — ✓ implemented
+
+**As built.** `uv run python evals/run.py <name|path>` resolves `evals/configs/<name>.yaml`,
+reads `type:` and lazily imports the matching runner, so one runner's dependencies never
+load for another. Every runner exposes `run_from_config(path) -> int`. Exit codes: the
+runner's own (0 clean, 1 failures or empty selection), or 2 for an unknown name or a
+missing/unknown `type`. The error lists the runnable configs; `scoring_rubric.yaml` has
+no `type` and is excluded.
+- **node_eval needed a runner first.** `node_eval.yaml` was provisional and nothing
+  consumed it, so `evals/node_eval.py` was added. It runs each `NODE_TASK_REGISTRY` task
+  over its `datasets/node/` file against `deployment` (or `AGENT_LLM_MODEL`) and checks
+  every `expected_output` key (`min_plan_steps`, `must_reach_interrupt`,
+  `min_draft_length`, `min_claims`, `has_verdict`, `expected_status`). An unknown key fails
+  at load time. Each item gets PASS, FAIL or ERROR (raised, or dead-lettered). Results go to
+  `evals/.runs/node_eval/`. One `node_eval` config covers all nodes; to run a subset, copy
+  it and trim `nodes` (no per-node config files).
+- `exp_baseline.yaml` gained `type: experiment` (`ExperimentConfig.type`).
+- taskipy: `experiment`, `redteam` and the new `node-eval` all route through `run.py`.
+  Runner-specific flags (`guardrail_redteam.py --include-multiturn`) stay on the scripts.
 
 **Why**: once 5c lands there will be at least four separate eval scripts (`smoke_test.py`,
 node-level tasks, `guardrail_redteam.py`, `run_experiment.py`), each with its own CLI
@@ -1101,7 +1195,7 @@ agent-app/app/prompts/
     │   └── draft.human.md               # "Question: {question}\n\nResearch plan:\n{plan_summary}"
     ├── reflection/
     │   ├── critic.system.md
-    │   ├── critic.human.md              # "Draft answer:\n{draft}"
+    │   ├── critic.human.md              # "Question:\n{question}\n\nDraft answer:\n{draft}"
     │   ├── refiner.system.md
     │   └── refiner.human.md             # "Draft:\n{draft}\n\nCritique:\n{critique}"
     ├── verification/
@@ -1129,7 +1223,7 @@ agent-app/app/prompts/
   - `nodes/writer.py` — `_SYSTEM_PROMPT = load_system("writer", "draft")`; `context =
     render_human("writer", "draft", question=question, plan_summary=plan_summary)`.
   - `nodes/subgraphs/reflection.py` — `_CRITIC_PROMPT = load_system("reflection", "critic")`,
-    critic `HumanMessage` becomes `render_human("reflection", "critic", draft=state["draft"])`;
+    critic `HumanMessage` becomes `render_human("reflection", "critic", question=state["question"], draft=state["draft"])`;
     `_REFINER_PROMPT = load_system("reflection", "refiner")`, refiner `HumanMessage` becomes
     `render_human("reflection", "refiner", draft=state["draft"], critique=state["critique"])`.
   - `nodes/subgraphs/verification.py` — `_VERIFY_PROMPT = load_system("verification",
@@ -1166,10 +1260,124 @@ round-trips correctly with externalized prompts.
 
 ---
 
+### Phase 7 — Research-domain eval realignment — ✓ implemented
+
+**As built**: as planned below, with no deviations. A new `TestShippedAssertions` runs
+every positive trace assertion in the rubric against a realistic happy-path history, so any
+assertion that can't pass on a real run fails in pytest. **Not yet run against a live
+app + LLM.**
+
+**Why**: the experiment harness still scores a pre-sales proposal generator. The judge rubric
+is built around a prospect's tech stack and pain points (stack_alignment,
+pain_point_coverage, specificity, feasibility, risk_acknowledgment), and
+`datasets/sample.yaml` holds five prospect profiles. The agent actually answers research
+questions, so `quality_score` measures behaviour the agent was never built for. On top of
+that, nothing consumes `expected_output`: it is schema-checked at load time and then
+ignored. Three shipped trace assertions also don't match the real graph:
+- `ta_planner_emits_interrupt` looks for a pause at `planner`, but `plan_review` owns the
+  interrupt. It passes anyway, for the wrong reason: the checkpoint after `input_guard`
+  has `next == ("planner",)`.
+- `ta_writer_status_set` reads the *final* `status` and expects `writing`/`reflecting`.
+  `output_guard` always ends a happy-path run with `done`, so this check can never pass.
+- `ta_flow_all_nodes_executed` omits `plan_review`.
+
+**Scope decisions**:
+- The judge uses its own reference-guided rubric, not the reflection critic's criteria.
+  Re-using `CriticVerdict` would grade the agent with the same rubric it already optimises
+  against during reflection. Same 5b structure (reasoning → score → confidence; 0–4 for
+  enumerable evidence, 0–2 for holistic), same 16-point max:
+
+  | id | scale | min | what it checks |
+  |---|---|---|---|
+  | `key_point_coverage` | 0–4 | 3 | covers the item's `must_cover` key points (countable) |
+  | `factual_accuracy` | 0–4 | 3 | no claims contradict the reference points or well-established facts (countable errors) |
+  | `specificity` | 0–4 | 2 | concrete names, dates, figures, mechanisms rather than generic statements |
+  | `focus` | 0–2 | 1 | answers the question asked, without padding or drift (holistic) |
+  | `uncertainty_handling` | 0–2 | 1 | flags contested points or limits of the evidence where they exist (holistic) |
+
+  `pass_policy.minimum_total` stays `12`.
+- `expected_output` is wired in two places:
+  - **The judge** sees the item's `must_cover` key points and `scoring_hints` in its prompt,
+    so `key_point_coverage` is scored against a reference rather than the judge's guess.
+  - **A new deterministic `expected_terms` evaluator** checks `must_include_terms` (each
+    present) and `must_not_contain` (each absent). Matching is a case-insensitive
+    substring match on `final_answer`, with no LLM call. The value is the fraction of
+    checks passed, and the comment names each failing term.
+- `ExpectedOutput` schema: `must_cover: list[KeyPoint]` (`id`, `description`),
+  `must_include_terms`, `must_not_contain`, `scoring_hints`. `PainPoint`, `must_address`
+  and `must_reference` are removed. `extra="forbid"` stays.
+- Dataset: five single-turn research questions with `approve_plan: true`. They are
+  well-documented topics the ReAct loop can find sources for. One of them is deliberately
+  contested, so it exercises `uncertainty_handling`:
+  1. What caused the 2008 financial crisis?
+  2. How do mRNA vaccines work?
+  3. What is CRISPR-Cas9 and how is it used in gene editing?
+  4. What are the main drivers of current global warming?
+  5. Why did the Western Roman Empire fall? (contested; multiple competing explanations)
+- Trace assertion fixes:
+  - `ta_planner_emits_interrupt` becomes `ta_plan_review_emits_interrupt`, with `expected: plan_review`.
+  - `ta_planner_aborts_on_reject` moves to `node: plan_review`.
+  - `ta_writer_status_set` is deleted, with no replacement. Asserting non-empty `claims`
+    would not work: the writer falls back to `claims=[]` when its JSON fails to parse, so
+    an LLM formatting problem would show up as a wiring failure. `ta_writer_produces_draft`
+    already covers the writer.
+  - `ta_flow_all_nodes_executed` gains `plan_review`.
+- Not in scope: changes to the reflection critic, `CriticVerdict`, node-level datasets, or
+  negative-path dataset items (adversarial probes stay in `guardrail_redteam`).
+
+**Deliverables**:
+- `evals/models.py`: replace `PainPoint` with `KeyPoint`, and give `ExpectedOutput` the
+  new fields. `QualityVerdict` gets the five new criteria plus `summary`.
+- `evals/configs/scoring_rubric.yaml`:
+  - Rewrite `quality_criteria` for the new five, with scoring guides.
+  - Drop the pre-sales header caveat.
+  - Apply the trace assertion fixes above.
+  - Remove the "CORRECTED as part of Phase 5d" history comment, keeping only what describes
+    the current file.
+- `evals/evaluators.py`:
+  - `_build_rubric_prompt` and `run_quality_judge` take an optional `ExpectedOutput` and
+    render "Key points" and "Scoring hints" blocks only when they are present.
+  - `make_quality_score_evaluator` validates `expected_output` and passes it through.
+  - Add the new `expected_terms_evaluator`.
+  - Fix the stale "Ollama" docstring.
+- `evals/run_experiment.py`: register `expected_terms_evaluator`.
+- `evals/datasets/sample.yaml`: rewrite with the five research items, each with 3–5
+  `must_cover` key points, 2–3 `must_include_terms`, `must_not_contain`
+  (refusal/placeholder phrases) and 2–3 `scoring_hints`.
+- `evaluators.py` / `run_experiment.py` module docstrings: the evaluator count and list
+  include `expected_terms`. README gets at most a one-line mention next to the experiment
+  command. Update the Target Layout comment for `sample.yaml`.
+
+**Tests** (`tests/evals/`):
+- `test_evaluators.py`: move the rubric/score fixtures to the new criteria. Existing
+  `score_verdict` / `check_rubric_matches_verdict` cases keep their intent. Add:
+  - `test_judge_prompt_includes_key_points_and_hints`: the prompt contains each
+    `must_cover` description and each hint.
+  - `test_judge_prompt_omits_reference_block_when_no_expected_output`.
+  - `TestExpectedTermsEvaluator`: all present → 1.0; a missing required term is named in
+    the comment; a forbidden phrase found is named; matching is case-insensitive; no term
+    checks → 1.0 with an explanatory comment; no `final_answer` → 0.0.
+- `test_dataset_validation.py`: move the valid-item fixture to `must_cover`; the typo
+  case becomes `must_coverr`; `test_sample_dataset_loads_and_validates` keeps checking
+  the shipped dataset (now also asserting every item has ≥3 key points).
+- `test_trace_assertions.py`: a happy-path history whose interrupt checkpoint has
+  `next == ("plan_review",)` passes the shipped `ta_plan_review_emits_interrupt`, and one
+  whose only `("planner",)` checkpoint is the post-input_guard step fails it. That second
+  case is the false positive the old assertion allowed.
+- Existing tests that target `specificity`, `feasibility` or `risk_acknowledgment` are
+  retargeted. In particular, the below-minimum test moves to `key_point_coverage` (min 3),
+  because `specificity`'s minimum drops to 2.
+
+**Done when**: `uv run pytest tests/evals` passes, the full suite passes, ruff and pyright
+are clean, and `grep -rn --exclude-dir=.runs -e prospect -e pain_point -e stack_alignment
+evals tests` finds nothing.
+
+---
+
 ## Dependencies
 
 ```toml
-# Matches agent-app/pyproject.toml as of Phase 4
+# Matches agent-app/pyproject.toml
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -1188,6 +1396,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.3",           # pin patch: <0.1.3 has breaking tool schema bug
     "logger",                                  # custom structlog wrapper: get_logger() + configure_logging()
     "gliner2>=1.3",                            # GLiGuard — input/output PII + injection + jailbreak guard
+    "slowapi>=0.1.9",                          # AGENT_RATE_LIMIT
 ]
 
 dev_dependencies = [
@@ -1199,6 +1408,7 @@ dev_dependencies = [
     "pyright>=1.1",
     "ruff",
     "taskipy>=1.14.0",
+    "pip-audit>=2.7",
 ]
 
 # GLiGuard model downloaded at first use via HuggingFace Hub:
@@ -1212,82 +1422,18 @@ dev_dependencies = [
 
 ## README.md Guide Sections
 
-Full local dev setup in order:
+`README.md` is the source of truth for setup commands; its Local setup section covers, in order:
 
-1. **Prerequisites** — Docker, Python 3.13, uv, Ollama
+1. **Prerequisites** — Docker, Python 3.13, uv, an LLM inference server
+2. **Postgres** — `postgres:17` container on port `5433`
+3. **LLM setup** — Option A: Unsloth Studio on `:8888` (default `AGENT_LLM_BASE_URL`);
+   Option B: headless llama.cpp `llama-server` on `:8889`
+4. **MCP server** — `uv run task mcp` on `:8001`
+5. **App** — `uv run python -m app` on `:8000`
+6. **Langfuse** (optional) — local Docker stack on `:3000`
+7. **LangGraph Studio** — free Mac desktop app reading `langgraph.json`
 
-2. **LLM inference server** (llama.cpp or Unsloth Studio):
-
-   **Option A — Unsloth Studio** (recommended; GUI, easier model management):
-   ```bash
-   pip install unsloth-studio
-   unsloth studio -H 127.0.0.1 -p 8888
-   ```
-   Then open **http://127.0.0.1:8888** in your browser. Search for
-   `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, select the `UD-Q4_K_XL` quant, download it,
-   then click **Start**. Studio starts a llama.cpp server in the background and shows
-   the API port in the UI — note that port and set `AGENT_LLM_BASE_URL=http://127.0.0.1:<port>/v1`.
-
-   **Option B — llama.cpp server** (headless):
-   ```bash
-   # download model
-   hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF --include "*UD-Q4_K_XL*"
-   # start server on port 8001 (alias must match AGENT_LLM_MODEL)
-   ./llama.cpp/llama-server \
-     --model unsloth/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
-     --alias "unsloth/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
-     --spec-type draft-mtp --spec-draft-n-max 2 \
-     --ctx-size 16384 --port 8002
-   ```
-   OpenAI-compatible API available at `http://127.0.0.1:8002/v1` — set `AGENT_LLM_BASE_URL=http://127.0.0.1:8002/v1` if using this option instead of Studio.
-   Port 8001 is reserved for the MCP server (`AGENT_MCP_SERVER_URL` default).
-
-3. **Postgres**:
-   ```bash
-   docker run --name langgraph-db \
-     -e POSTGRES_PASSWORD=postgres \
-     -e POSTGRES_DB=langgraph \
-     -e POSTGRES_USER=postgres \
-     -p 5433:5432 \
-     -d postgres:17
-   ```
-
-4. **Langfuse** (local Docker):
-   ```bash
-   git clone https://github.com/langfuse/langfuse.git
-   cd langfuse
-   docker compose up -d
-   # UI: http://localhost:3000
-   # Default login: admin@langfuse.com / password
-   # Create a project → copy keys to .env
-   ```
-
-5. **MCP server** (in a separate terminal):
-   ```bash
-   cd agent-app
-   uv run python -m app.mcp.server   # serves on http://localhost:8001
-   ```
-
-6. **App**:
-   ```bash
-   cd agent-app
-   cp .env.example .env   # fill LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
-   uv sync
-   uv run python -m app
-   ```
-
-7. **LangGraph Studio** (free Mac desktop app):
-   ```
-   Download from https://studio.langchain.com
-   Open agent-app/ — Studio reads langgraph.json and starts a dev server
-   ```
-
-8. **Evals**:
-   ```bash
-   uv run task create-dataset
-   uv run task experiment
-   # Results: evals/.runs/ and Langfuse UI
-   ```
+Evals and tests are in README's Tests section (`uv run task test`, `uv run python evals/run.py <config>`).
 
 ---
 
@@ -1307,8 +1453,8 @@ Full local dev setup in order:
 
 | Function | Signature | Used by |
 |---|---|---|
-| `create_graph()` | `() -> StateGraph` | LangGraph Studio — returns the uncompiled graph; Studio injects its own checkpointer and MCP client |
-| `compile_graph(checkpointer, llm, mcp_tools)` | `(AsyncPostgresSaver, BaseChatModel, list[BaseTool]) -> CompiledStateGraph` | `main.py` lifespan — called after MCP client and checkpointer are both ready |
+| `create_graph()` | `() -> StateGraph` | LangGraph Studio — returns the uncompiled graph built with the default LLM, no MCP tools and a no-op guard; Studio injects its own checkpointer |
+| `compile_graph(checkpointer, mcp_tools, gliguard, node_llm_configs=None)` | `(BaseCheckpointSaver, list[BaseTool], GLiGuardClient, dict[str, NodeLLMConfig] \| None) -> CompiledStateGraph` | `main.py` lifespan — called after MCP tools, GLiGuard and the checkpointer are all ready |
 
 This separation means Studio can inspect the graph topology without starting a Postgres instance or MCP server.
 
@@ -1323,16 +1469,17 @@ This separation means Studio can inspect the graph topology without starting a P
 
 ## Verification Per Phase
 
-- **Phase 5b**: critic LLM call validates against `QualityVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max.
-- **Phase 5c**: `guardrail_redteam` run covers ≥4 categories including the homoglyph and persona-hijack cases.
-- **Phase 5e**: `evals/run.py` dispatches to all registered eval types by config name.
+- **Phase 5b** ✓: eval judge validates against `QualityVerdict` and the critic against `CriticVerdict`; `scoring_rubric.yaml` thresholds match the new 16-point max (enforced by `check_rubric_matches_verdict`).
+- **Phase 5c** ✓: `guardrail_redteam` covers ≥4 categories including the homoglyph and persona-hijack cases; `tests/evals/test_guardrail_redteam.py` shows a disabled guard flips a case to FAIL.
+- **Phase 5e** ✓: `evals/run.py` dispatches `exp_baseline`, `guardrail_redteam` and `node_eval` by name; an unknown name exits 2 listing the available configs (`tests/evals/test_run.py`).
 - **Phase 6**: `uv run pytest tests/test_prompts.py` passes; full `uv run pytest` suite unaffected; `uv run python -m app` + one curl research request round-trips correctly with externalized prompts.
+- **Phase 7** ✓: `uv run pytest tests/evals` passes; `QualityVerdict`, `scoring_rubric.yaml` and `sample.yaml` describe research answers; `expected_terms` runs in the experiment; shipped trace assertions match the real graph (`plan_review` interrupt, no final-status writer check).
 
 ---
 
 ## Notes
 
-- Ollama tests: skip live LLM calls by default (mock LLM); set `AGENT_RUN_LLM_TESTS=true` to hit real Ollama
+- Tests: pytest never calls a live LLM (mock LLM throughout); Postgres-backed tests skip when Postgres on `localhost:5433` is unreachable. Live-LLM checks live in `evals/` (`smoke_test.py`, `run.py node_eval`)
 - MCP server tests: use in-process `fastmcp` test client; no network required
 - Reflection loop ceiling: `AGENT_MAX_REFLECTION_ATTEMPTS` (default 5); ReAct ceiling: `AGENT_MAX_REACT_STEPS` (default 10); both are intentionally finite to bound cost
 - LLM timeout: `AGENT_LLM_TIMEOUT_SECONDS` (default 60s); retries: `AGENT_LLM_MAX_RETRIES` (default 3, exponential backoff, transient errors only)

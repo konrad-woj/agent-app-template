@@ -1,4 +1,4 @@
-"""Pydantic models for evals/ — Phase 5d (see PLAN.md).
+"""Pydantic models for evals/ — Phases 5d, 5b and 7 (see PLAN.md).
 
 `ExpectedOutput` is the schema every item's `expected_output` in
 evals/datasets/*.yaml must satisfy. It is validated at dataset-load time (see
@@ -6,21 +6,23 @@ evals/datasets/*.yaml must satisfy. It is validated at dataset-load time (see
 evaluator — a misspelled field in a hand-edited YAML file must raise loudly
 before a run starts, not silently make one evaluator a permanent no-op.
 
-`RubricJudgeVerdict` is a **provisional** structural model for the current
-(pre-Phase-5b) freeform-JSON quality judge output — see evals/evaluators.py.
-Phase 5b will replace it with per-criterion Pydantic models
-(`CriterionVerdict`/`HolisticCriterionVerdict`) enforcing a `reasoning` field
-written before `score`, plus a `confidence` flag. This model exists only so
-`run_experiment.py` has *something* to validate the judge's JSON against in
-the meantime, rather than trusting `json.loads` blindly.
+`QualityVerdict` is the quality judge's output schema (Phase 5b): one
+reasoning → score → confidence verdict per `quality_criteria` entry in
+evals/configs/scoring_rubric.yaml, built from the same per-criterion models the
+reflection critic uses (app/graph/nodes/subgraphs/_rubric_models.py). The judge
+is not asked for a total or a pass/fail — evals/evaluators.py computes both
+from the scores and the rubric's pass_policy, so judge arithmetic can't drift
+from the rubric.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from app.graph.nodes.subgraphs._rubric_models import CriterionVerdict, HolisticCriterionVerdict
 
-class PainPoint(BaseModel):
+
+class KeyPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -30,6 +32,10 @@ class PainPoint(BaseModel):
 class ExpectedOutput(BaseModel):
     """Matches the expected_output shape used across evals/datasets/sample.yaml.
 
+    `must_cover` and `scoring_hints` go to the quality judge as its reference;
+    `must_include_terms` / `must_not_contain` are checked deterministically by
+    `evals.evaluators.expected_terms_evaluator`.
+
     `extra="forbid"` is deliberate: a typo'd field (e.g. `must_include_term`
     instead of `must_include_terms`) must raise at load time instead of
     silently validating as an empty-defaulted, differently-named field.
@@ -37,33 +43,24 @@ class ExpectedOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    must_address: list[PainPoint] = []
-    must_reference: list[str] = []
+    must_cover: list[KeyPoint] = []
     must_include_terms: list[str] = []
     must_not_contain: list[str] = []
     scoring_hints: list[str] = []
 
 
-class CriterionScore(BaseModel):
-    """One criterion's score within a RubricJudgeVerdict — see module docstring."""
+class QualityVerdict(BaseModel):
+    """One verdict per scoring_rubric.yaml criterion — field names are the criterion ids.
 
-    model_config = ConfigDict(extra="forbid")
-
-    score: int
-    reason: str
-
-
-class RubricJudgeVerdict(BaseModel):
-    """Structural validation for the current freeform quality-judge JSON output.
-
-    Matches the shape documented in evals/configs/scoring_rubric.yaml's
-    `pass_policy` comment: {"scores": {...}, "total": int, "passed": bool,
-    "summary": str}. See module docstring for the Phase 5b upgrade path.
+    0–4 (`CriterionVerdict`) for criteria with checkable evidence, 0–2
+    (`HolisticCriterionVerdict`) for holistic ones; the rubric's `max_score`
+    values must agree, which `evals.evaluators.check_rubric_matches_verdict`
+    enforces at config-load time.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    scores: dict[str, CriterionScore]
-    total: int
-    passed: bool
+    key_point_coverage: CriterionVerdict
+    factual_accuracy: CriterionVerdict
+    specificity: CriterionVerdict
+    focus: HolisticCriterionVerdict
+    uncertainty_handling: HolisticCriterionVerdict
     summary: str

@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     # add_messages reducer: nodes append to this list by default, and may
     # replace/delete a specific message via RemoveMessage(id=...).
     messages: Annotated[list[AnyMessage], add_messages]
+    question: str  # this turn's sanitised question, set by input_guard (read via get_turn_question)
     plan: list[str]  # planner output; each entry is one research step
     plan_approved: bool
     claims: list[str]  # verifiable factual claims extracted by writer
@@ -38,6 +39,7 @@ class AgentState(TypedDict):
     draft_answer: str  # writer output before reflection
     reflection_attempts: int
     reflection_passed: bool
+    reflection_low_confidence: list[str]  # criteria the final critic pass flagged for human review
     final_answer: str  # output_guard-approved answer returned to the caller
     # Lifecycle: "planning" → "researching" → "writing" → "verifying" →
     #            "reflecting" → "done" | "aborted" | "blocked" | "dead_lettered"

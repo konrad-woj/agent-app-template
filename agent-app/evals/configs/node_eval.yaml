@@ -1,13 +1,13 @@
-# Phase 5a node-level eval config (see PLAN.md).
+# Node-level eval config — Phases 5a/5e (see PLAN.md and evals/node_eval.py).
 #
-# PROVISIONAL: this file's schema is not yet consumed by any runner. Phase 5d
-# (evals/run_experiment.py) and Phase 5e (evals/run.py) will define the
-# authoritative Pydantic config schema for `task: node_eval` — see PLAN.md's
-# reference to the node_eval.yaml shape used by the audited reference project
-# (task: node_eval, node: <name>, deployment: <model>). This file documents the
-# intended shape now so the dataset-to-node mapping isn't lost before that
-# runner exists; expect it to be reshaped (or split into one file per node,
-# matching evals/datasets/node/*.yaml) once Phase 5e lands.
+# Usage:
+#   uv run python evals/run.py node_eval
+#   uv run task node-eval
+#
+# Runs each node task in evals/node_tasks.py over its dataset against a real LLM
+# and checks every item's expected_output. No app server, Postgres or MCP server
+# needed — only the LLM backend. GLiGuard is mocked permissively (see
+# evals/node_tasks.py). To evaluate a subset, copy this file and trim `nodes`.
 
 type: node_eval
 nodes:
@@ -24,6 +24,5 @@ nodes:
   - node: resume_guard
     dataset: node/resume_guard.yaml
 
-# deployment/model used when running against a real LLM (Phase 5e). Until then,
-# tests/evals/test_node_tasks.py exercises every task above with a mocked LLM.
+# LiteLLM model id to evaluate; null → AGENT_LLM_MODEL (the app's own default).
 deployment: null

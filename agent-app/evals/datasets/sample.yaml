@@ -1,279 +1,152 @@
-# Pre-sales proposal dataset — 5 synthetic prospect profiles
+# Research-question dataset — 5 single-turn questions for the research assistant.
 #
-# KNOWN DOMAIN MISMATCH (found while implementing PLAN.md Phase 5d, not fixed
-# here — this is a dataset-content rewrite, not a harness change): agent-app's
-# actual implemented agent (see README.md) is a general research assistant
-# that answers factual questions (e.g. "What caused the 2008 financial
-# crisis?") and produces a plan → researched answer, NOT a pre-sales technical
-# proposal generator. The five items below (RetailEdge, ClearPay Financial,
-# etc.) describe prospect pain points and expect a *sales proposal* — an
-# earlier design direction that predates the research-assistant framing this
-# repo actually shipped. Running these through the real graph still exercises
-# every node correctly (planner/react_researcher/writer don't care what the
-# question is about), but the `quality_criteria` scores below (stack alignment,
-# pain point coverage) are checking for proposal-writing behavior the agent was
-# never built to produce, so quality_score results on this dataset should be
-# read with that caveat until it's replaced with real research questions.
-#
-# Each entry represents one evaluation case. The agent receives `input` and
-# must produce a technical proposal that satisfies all `expected_output` checks.
+# Topics are well documented, so the ReAct loop can find sources and the judge
+# can check accuracy. q_005 is deliberately contested and exercises the
+# rubric's uncertainty_handling criterion.
 #
 # Fields:
 #   input.messages        — conversation turns sent to POST /v1/chat
 #   input.approve_plan    — whether the simulated human approves the research plan
-#                           (set to false in a separate negative-path test case)
-#   expected_output       — properties the final proposal must satisfy
-#     must_address        — pain point IDs that must each be explicitly discussed
-#     must_reference      — stack items that must appear (case-insensitive substring match)
-#     must_include_terms  — domain terms signalling a non-generic proposal
-#     must_not_contain    — strings that would indicate a templated / off-topic response
-#     scoring_hints       — free-text guidance for the LLM-based eval judge
+#   expected_output       — evals.models.ExpectedOutput
+#     must_cover          — key points a complete answer covers; the quality judge's reference
+#     must_include_terms  — terms that must appear in final_answer (case-insensitive substring)
+#     must_not_contain    — refusal / placeholder phrases that must not appear
+#     scoring_hints       — extra guidance for the quality judge
 
 dataset_name: sample
 items:
-  - id: prospect_001
-    name: RetailEdge
-    description: >
-      Mid-size e-commerce platform (50 M annual orders, ~120 engineers).
-      Python/Django monolith migrating to microservices. Wants to add ML-based
-      product recommendations without a full platform rewrite.
+  - id: q_001
+    name: 2008 financial crisis
     input:
       messages:
         - role: user
-          content: >
-            We are RetailEdge, an e-commerce platform built on Django and PostgreSQL
-            (AWS RDS). Our Redis cache sits in front of the product catalogue.
-            We have two pain points we need help with:
-            (1) Our recommendations are hardcoded bestseller lists — no personalisation.
-                New products get zero traffic for weeks (cold-start problem).
-            (2) Our search relevance is poor: exact-match only, no semantic understanding.
-            We have a small data team (3 people) and cannot afford a full ML platform.
-            Please produce a technical proposal.
+          content: What caused the 2008 financial crisis?
       approve_plan: true
     expected_output:
-      must_address:
-        - id: pp1
-          description: Personalisation / recommendation cold-start
-        - id: pp2
-          description: Semantic search relevance
-      must_reference:
-        - Django
-        - PostgreSQL
-        - Redis
+      must_cover:
+        - id: kp1
+          description: A US housing bubble fuelled by subprime mortgage lending and loose underwriting
+        - id: kp2
+          description: Securitisation (mortgage-backed securities, CDOs) spread mortgage risk across the financial system, helped by overly generous credit ratings
+        - id: kp3
+          description: Banks and investment banks were highly leveraged and relied on short-term funding
+        - id: kp4
+          description: The collapse of Lehman Brothers in September 2008 turned the downturn into a global panic
       must_include_terms:
-        - embeddings
-        - vector
-        - cold start
+        - subprime
+        - Lehman
       must_not_contain:
-        - "contact our sales team"
-        - "please provide more details"
         - "I cannot help with"
+        - "as an AI"
       scoring_hints:
-        - Proposal should suggest a vector store compatible with the existing AWS stack
-          (e.g. pgvector, OpenSearch) rather than requiring a new managed service.
-        - Cold-start mitigation should be content-based (item metadata embeddings),
-          not solely collaborative filtering which requires interaction history.
-        - Search improvement should propose a hybrid BM25 + dense retrieval approach,
-          not a rewrite of the search backend.
-        - Must acknowledge the 3-person data team constraint and prefer managed or
-          low-ops solutions.
+        - Should explain how losses on housing spread through securitised products, not just list causes.
+        - Regulatory gaps (e.g. shadow banking, credit default swaps) are a plus but not required.
 
-  - id: prospect_002
-    name: ClearPay Financial
-    description: >
-      FinTech startup (Series B, ~40 engineers). Node.js microservices on GCP,
-      PostgreSQL + BigQuery. Manual fraud review team of 8 analysts spending
-      4 hours/day on false positives.
+  - id: q_002
+    name: mRNA vaccines
     input:
       messages:
         - role: user
-          content: >
-            We are ClearPay, a payment processor running Node.js microservices on GCP
-            with PostgreSQL for transactional data and BigQuery for analytics.
-            Our fraud detection is purely rule-based (velocity checks, blocklists).
-            Two critical pain points:
-            (1) False positive rate is 18% — analysts spend 4 hours/day manually
-                reviewing legitimate transactions that got flagged.
-            (2) We have no anomaly detection for novel fraud patterns; we only catch
-                known patterns after someone writes a new rule.
-            We process 2 M transactions/day. Latency SLA is <200 ms per transaction.
-            Please produce a technical proposal.
+          content: How do mRNA vaccines work?
       approve_plan: true
     expected_output:
-      must_address:
-        - id: pp1
-          description: High false positive rate in fraud detection
-        - id: pp2
-          description: No detection of novel / unseen fraud patterns
-      must_reference:
-        - Node.js
-        - BigQuery
-        - GCP
+      must_cover:
+        - id: kp1
+          description: The vaccine delivers mRNA that encodes a viral antigen, such as the SARS-CoV-2 spike protein
+        - id: kp2
+          description: The mRNA is packaged in lipid nanoparticles that carry it into cells
+        - id: kp3
+          description: Cells translate the mRNA into the antigen, which triggers antibody and T-cell responses
+        - id: kp4
+          description: The mRNA does not enter the cell nucleus or alter DNA, and is broken down within days
       must_include_terms:
-        - anomaly detection
-        - false positive
-        - latency
+        - lipid nanoparticle
+        - spike protein
       must_not_contain:
-        - "contact our sales team"
         - "I cannot help with"
+        - "as an AI"
       scoring_hints:
-        - Proposal must respect the <200 ms latency SLA; batch-only solutions are
-          insufficient for the real-time scoring path.
-        - Should propose a two-layer approach - a fast rule + ML model for online
-          scoring and a slower anomaly/unsupervised model for pattern discovery.
-        - BigQuery should be leveraged for feature engineering / model training,
-          not ignored.
-        - Should address the analyst workflow (e.g. review queue prioritisation)
-          not just the model accuracy.
+        - Should not claim mRNA vaccines change the recipient's DNA; that is a factual error.
+        - Mentioning nucleoside modification (e.g. pseudouridine) is a plus.
 
-  - id: prospect_003
-    name: MedNotes Health
-    description: >
-      Healthcare SaaS (~60 engineers). React frontend, Java Spring Boot backend,
-      MongoDB. Processes 500 K clinical notes/month. HIPAA-covered entity.
+  - id: q_003
+    name: CRISPR-Cas9
     input:
       messages:
         - role: user
-          content: >
-            We are MedNotes, a clinical documentation platform. Our stack is
-            React + Java Spring Boot + MongoDB, hosted on AWS (us-east-1).
-            We are a HIPAA-covered entity — all data is PHI.
-            Pain points:
-            (1) Clinicians spend 20 minutes per visit on structured data entry.
-                We want to auto-extract ICD-10 codes, medications, and allergies
-                from free-text notes.
-            (2) Our search over historical notes is keyword-only; clinicians cannot
-                ask natural-language questions like "show me diabetic patients on
-                metformin with an A1C above 8".
-            We cannot send PHI to third-party APIs (GDPR + HIPAA).
-            Please produce a technical proposal.
+          content: What is CRISPR-Cas9 and how is it used in gene editing?
       approve_plan: true
     expected_output:
-      must_address:
-        - id: pp1
-          description: Automated extraction of structured data from clinical notes
-        - id: pp2
-          description: Natural-language search over historical notes
-      must_reference:
-        - Spring Boot
-        - MongoDB
-        - AWS
+      must_cover:
+        - id: kp1
+          description: CRISPR-Cas9 is adapted from a bacterial immune defence against viruses
+        - id: kp2
+          description: A guide RNA directs the Cas9 enzyme to a matching DNA sequence, where Cas9 cuts both strands
+        - id: kp3
+          description: The cell repairs the cut by non-homologous end joining (disrupting a gene) or homology-directed repair (inserting a template)
+        - id: kp4
+          description: Uses include research, agriculture and therapies, with risks such as off-target edits
       must_include_terms:
-        - ICD-10
-        - NER
-        - HIPAA
-        - on-premise
+        - guide RNA
+        - Cas9
       must_not_contain:
-        - "send data to OpenAI"
-        - "use the OpenAI API"
-        - "contact our sales team"
-      scoring_hints:
-        - HIPAA constraint is non-negotiable — proposal must explicitly recommend
-          self-hosted or AWS-native models (e.g. AWS Comprehend Medical, on-prem
-          Llama), not third-party hosted APIs.
-        - NER/extraction should name a specific model or library (spaCy, medspaCy,
-          AWS Comprehend Medical) not just say "use an NLP model".
-        - Natural-language query should mention RAG or a hybrid search approach
-          over the MongoDB collection.
-        - Must acknowledge the PHI constraint in every proposed integration step.
-
-  - id: prospect_004
-    name: FleetRoute Logistics
-    description: >
-      Regional logistics company (~200 drivers, ~25 engineers). Legacy PHP + MySQL
-      monolith, no real-time telemetry. Manual dispatch via spreadsheets.
-    input:
-      messages:
-        - role: user
-          content: >
-            We are FleetRoute, a regional last-mile delivery company.
-            Our tech stack is a PHP 7 monolith backed by MySQL 5.7.
-            We have no real-time vehicle telemetry beyond driver phone check-ins.
-            Pain points:
-            (1) Route planning is manual — dispatchers use spreadsheets and gut feel.
-                We deliver to ~300 stops/day across 40 trucks; optimisation could
-                save an estimated 15% in fuel.
-            (2) We have no ETA predictions for customers; the only notification is
-                a manual call from the driver.
-            We have a 25-person engineering team and cannot afford to rebuild
-            the monolith. Budget is limited.
-      approve_plan: true
-    expected_output:
-      must_address:
-        - id: pp1
-          description: Manual route planning / optimisation
-        - id: pp2
-          description: No real-time ETA or customer notification
-      must_reference:
-        - PHP
-        - MySQL
-      must_include_terms:
-        - route optimisation
-        - VRP
-        - ETA
-        - webhook
-      must_not_contain:
-        - "rewrite your monolith"
-        - "migrate to microservices"
-        - "contact our sales team"
-      scoring_hints:
-        - Budget / team size constraint means proposal should favour API-first
-          additions (e.g. OR-Tools or a routing API) that wrap the existing monolith
-          rather than greenfield rewrites.
-        - VRP (vehicle routing problem) should be named explicitly; generic
-          "optimisation" is too vague.
-        - ETA prediction can be simple (historical delivery time + live traffic API)
-          — proposal should not over-engineer with custom ML when a simpler heuristic
-          would suffice for the stated scale.
-        - Real-time telemetry gap should be addressed (e.g. lightweight driver app
-          posting GPS pings) before ETA is feasible.
-
-  - id: prospect_005
-    name: PulseCast Media
-    description: >
-      Digital media company (~80 engineers). Python + Elasticsearch + PostgreSQL,
-      AWS. 2 M registered users, 10 M monthly article views. Low content engagement
-      and high churn on the free tier.
-    input:
-      messages:
-        - role: user
-          content: >
-            We are PulseCast, a digital media platform. Our stack is Python
-            (Flask + Celery), Elasticsearch 7, and PostgreSQL, all on AWS.
-            We have 2 M registered users and serve ~10 M article views/month.
-            Pain points:
-            (1) Content discovery is chronological or category-based only.
-                Users cannot find niche content they would love; engagement (CTR
-                on recommended articles) is 2%, well below industry average of 8%.
-            (2) We cannot identify at-risk users before they churn; we only know
-                they churned after 30 days of inactivity.
-            Our data team is strong (6 engineers) but focused on ad analytics.
-      approve_plan: true
-    expected_output:
-      must_address:
-        - id: pp1
-          description: Low content recommendation engagement / poor discovery
-        - id: pp2
-          description: No churn prediction or early-warning system
-      must_reference:
-        - Elasticsearch
-        - PostgreSQL
-        - Python
-      must_include_terms:
-        - collaborative filtering
-        - churn
-        - engagement
-        - feature store
-      must_not_contain:
-        - "contact our sales team"
         - "I cannot help with"
+        - "as an AI"
       scoring_hints:
-        - Elasticsearch already supports dense vector search (kNN) — proposal should
-          leverage this rather than recommending a separate vector DB.
-        - Churn prediction model should be described at the feature level
-          (recency, frequency, session depth) not just named as a black box.
-        - Recommendation improvement path should be incremental - start with
-          content-based filtering (no cold start issue), layer in collaborative
-          filtering once interaction data is sufficient.
-        - Should acknowledge the ad-analytics data team as an asset and propose
-          reusing their feature pipelines.
+        - Doudna and Charpentier (Nobel Prize in Chemistry 2020) are a plus, not required.
+        - An approved therapy (e.g. Casgevy for sickle cell disease) is a strong concrete example.
+
+  - id: q_004
+    name: Drivers of global warming
+    input:
+      messages:
+        - role: user
+          content: What are the main drivers of current global warming?
+      approve_plan: true
+    expected_output:
+      must_cover:
+        - id: kp1
+          description: Greenhouse gas emissions from human activity, chiefly carbon dioxide from burning fossil fuels
+        - id: kp2
+          description: Methane (agriculture, fossil fuel production, landfills) and nitrous oxide add substantial warming
+        - id: kp3
+          description: Deforestation and land-use change release carbon and reduce carbon sinks
+        - id: kp4
+          description: The IPCC assesses human influence as the dominant cause of warming since the mid-20th century
+      must_include_terms:
+        - carbon dioxide
+        - greenhouse
+      must_not_contain:
+        - "I cannot help with"
+        - "as an AI"
+      scoring_hints:
+        - Natural factors (solar, volcanic) may be mentioned but must not be presented as the main driver.
+        - Feedbacks (water vapour, ice-albedo) amplifying the warming are a plus.
+
+  - id: q_005
+    name: Fall of the Western Roman Empire
+    input:
+      messages:
+        - role: user
+          content: Why did the Western Roman Empire fall?
+      approve_plan: true
+    expected_output:
+      must_cover:
+        - id: kp1
+          description: Historians attribute the fall to several interacting causes and still debate their relative weight
+        - id: kp2
+          description: Pressure from migrating and invading groups such as the Goths, Vandals and Huns
+        - id: kp3
+          description: Political instability, civil wars and weakening central authority
+        - id: kp4
+          description: Fiscal and economic strain, including the loss of tax-rich provinces such as North Africa
+        - id: kp5
+          description: The conventional end date is 476 CE, when Odoacer deposed Romulus Augustulus
+      must_include_terms:
+        - "476"
+      must_not_contain:
+        - "I cannot help with"
+        - "as an AI"
+      scoring_hints:
+        - This topic is contested; an answer that gives one cause as settled fact should score low on uncertainty_handling.
+        - Naming competing schools (e.g. "decline and fall" vs. "transformation" views) is a plus.

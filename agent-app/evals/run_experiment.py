@@ -3,7 +3,7 @@
 Drives multi-turn conversations against a *live* agent-app server (POST
 /v1/chat), reads the full checkpoint history directly from the same Postgres
 database the server uses (not through a new API endpoint — see
-`_read_history` below), and scores each run with the four evaluators in
+`_read_history` below), and scores each run with the five evaluators in
 evals/evaluators.py. Results are written to evals/.runs/<config-name>/<timestamp>.json
 and, if Langfuse credentials are configured, also uploaded as scores.
 
@@ -46,7 +46,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import yaml
@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
 from evals.evaluators import (
+    expected_terms_evaluator,
     make_quality_score_evaluator,
     make_trace_assertion_evaluator,
     plan_approved_evaluator,
@@ -85,6 +86,7 @@ class ExperimentVariant(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
+    type: Literal["experiment"] = "experiment"  # dispatch key for evals/run.py
     experiment_name: str
     dataset: str = "sample.yaml"  # resolved relative to evals/datasets/
     scoring_rubric: str = "scoring_rubric.yaml"  # resolved relative to evals/configs/
@@ -316,6 +318,7 @@ def _upload_scores(langfuse: Langfuse, thread_id: str, evaluations: list) -> Non
                 value=ev.value,
                 data_type=ev.data_type or "NUMERIC",
                 comment=ev.comment,
+                metadata=ev.metadata,
             )
         except Exception as exc:  # pragma: no cover - defensive; create_score itself rarely raises
             logger.warning("langfuse.score_upload_failed", thread_id=thread_id, name=ev.name, error=str(exc))
@@ -375,7 +378,10 @@ async def _run_variant(
             return {
                 "item_id": item.get("id"),
                 "output": output,
-                "evaluations": [{"name": e.name, "value": e.value, "comment": e.comment} for e in evaluations],
+                "evaluations": [
+                    {"name": e.name, "value": e.value, "comment": e.comment, "metadata": e.metadata}
+                    for e in evaluations
+                ],
             }
 
         item_results = await asyncio.gather(*(_run_one(item) for item in items))
@@ -404,7 +410,10 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
 
     rubric = _load_scoring_rubric(cfg.scoring_rubric)
     evaluators = [
-        make_quality_score_evaluator(rubric["quality_criteria"], cfg.judge_model),
+        make_quality_score_evaluator(
+            rubric["quality_criteria"], cfg.judge_model, rubric["pass_policy"]["minimum_total"]
+        ),
+        expected_terms_evaluator,
         make_trace_assertion_evaluator(rubric["trace_assertions"]),
         turns_to_complete_evaluator,
         plan_approved_evaluator,
@@ -472,16 +481,18 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def run_from_config(path: Path) -> int:
+    """evals/run.py entry point: load, validate, run, return the exit code."""
     configure_logging()
+    cfg = ExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
+    return asyncio.run(run_experiment(cfg, str(path)))
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Run an HTTP-driven eval experiment against agent-app.")
     parser.add_argument("config", help="Path to an experiment config YAML (e.g. evals/configs/exp_baseline.yaml)")
     args = parser.parse_args()
-
-    raw = yaml.safe_load(Path(args.config).read_text())
-    cfg = ExperimentConfig.model_validate(raw)
-    exit_code = asyncio.run(run_experiment(cfg, args.config))
-    sys.exit(exit_code)
+    sys.exit(run_from_config(Path(args.config)))
 
 
 if __name__ == "__main__":

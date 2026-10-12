@@ -1,7 +1,7 @@
 # Phase 5a node-level eval dataset — planner (see PLAN.md, evals/node_tasks.py).
 #
-# Tests plan-generation quality against a real LLM (once wired into evals/run.py
-# per Phase 5e): does the planner decompose the question into concrete, actionable
+# Tests plan-generation quality against a real LLM (`uv run python evals/run.py
+# node_eval`): does the planner decompose the question into concrete, actionable
 # steps and correctly reach the human-approval interrupt. GLiGuard is mocked
 # permissively by make_planner_task, so this dataset is not about guard behaviour
 # (see tests/graph/nodes/test_planner.py for that).

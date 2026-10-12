@@ -81,7 +81,7 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
 
         logger.info("input_guard.layer3_verdict", verdict=verdict.verdict, reason=verdict.reason)
         if verdict.verdict == "safe":
-            return {"status": "planning", "messages": sanitized_messages}
+            return {"status": "planning", "question": user_text, "messages": sanitized_messages}
         return {"status": "blocked", "guard_reason": verdict.reason, "messages": sanitized_messages}
 
     return input_guard

@@ -4,7 +4,8 @@ Every task below runs with a mocked LLM and a mocked GLiGuardClient — zero
 network calls, no Postgres, no MCP server. This is the harness-plumbing test:
 it proves each task correctly wires a minimal state into its node and maps the
 node's output back into the task's return dict. Quality regression against a
-*real* LLM (using the datasets in evals/datasets/node/) is a Phase 5e concern.
+*real* LLM (using the datasets in evals/datasets/node/) is evals/node_eval.py's job
+(`uv run python evals/run.py node_eval`).
 """
 
 from unittest.mock import AsyncMock, MagicMock
