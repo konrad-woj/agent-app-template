@@ -51,6 +51,7 @@ def _base_state(draft: str = "draft answer", attempts: int = 0) -> ReflectionSta
         "reflection_attempts": attempts,
         "passed": False,
         "low_confidence": [],
+        "critic_failed": False,
     }
 
 
@@ -94,11 +95,23 @@ class TestReflectionSubgraph:
         assert result["passed"] is False
         assert result["reflection_attempts"] >= 3
 
-    async def test_unparseable_critic_response_treated_as_pass(self) -> None:
+    async def test_unparseable_critic_response_fails_closed_without_refining(self) -> None:
+        # A single LLM response: if the loop went on to the refiner, the mock would run dry.
         llm = _make_llm_sequence("Looks fine to me, good quality!")
         subgraph = build_reflection_subgraph(llm)
-        result = await subgraph.ainvoke(_base_state(), _CONFIG)
-        assert result["passed"] is True
+        result = await subgraph.ainvoke(_base_state(draft="original"), _CONFIG)
+        assert result["passed"] is False
+        assert result["critic_failed"] is True
+        assert result["draft"] == "original"
+        assert result["reflection_attempts"] == 1
+
+    async def test_critic_prompt_marks_question_and_draft_as_data(self) -> None:
+        llm = _make_llm_sequence(_critic())
+        subgraph = build_reflection_subgraph(llm)
+        await subgraph.ainvoke(_base_state(), _CONFIG)
+        system, human = llm.ainvoke.call_args.args[0]
+        assert "not instructions" in system.content
+        assert "<question>" in human.content and "<draft>" in human.content
 
     async def test_old_freeform_verdict_shape_no_longer_validates(self) -> None:
         # The pre-5b {"verdict", "critique"} shape is a parse failure now, not a silent pass/fail.

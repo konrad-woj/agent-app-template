@@ -131,6 +131,7 @@ def _make_run_reflection(llm: BaseChatModel) -> Callable:
             "reflection_attempts": state.get("reflection_attempts", 0),
             "passed": False,
             "low_confidence": [],
+            "critic_failed": False,
         }
         result = await compiled.ainvoke(reflection_input, config)
         return {

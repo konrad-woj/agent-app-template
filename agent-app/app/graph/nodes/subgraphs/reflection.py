@@ -7,6 +7,7 @@ in workflow.py that maps keys in both directions.
 Loop exit conditions (whichever comes first):
   1. critic's scores clear the pass policy (passed=True)
   2. reflection_attempts reaches MAX_REFLECTION_ATTEMPTS (settings.max_reflection_attempts)
+  3. the critic's response can't be parsed (critic_failed=True, passed=False)
 
 When the ceiling is hit, the best draft available is kept and reflection_passed
 propagates as False — the output guard still runs.
@@ -56,6 +57,7 @@ class ReflectionState(TypedDict):
     reflection_attempts: int
     passed: bool
     low_confidence: list[str]  # criterion ids the latest critic pass was unsure about
+    critic_failed: bool  # latest critic response was unparseable → stop, unreviewed
 
 
 class CriticVerdict(BaseModel):
@@ -108,11 +110,11 @@ def make_critic_node(llm: BaseChatModel) -> Callable:
             low_confidence = low_confidence_criteria(parsed)
             scores = {name: v.score for name, v in criterion_verdicts(parsed).items()}
         else:
-            # Parse failure → treat as pass to avoid refining against a critique that
-            # doesn't exist. Logged as a warning: repeated hits mean the critic model
-            # can't follow the schema and the quality gate is effectively off.
+            # Parse failure → fail closed: the draft is not marked as passed (a question
+            # that talks the critic out of its JSON must not switch the gate off), and the
+            # loop stops rather than refining against a critique that doesn't exist.
             logger.warning("critic.parse_failed", attempt=attempt, raw_length=len(raw))
-            passed, critique, low_confidence, scores = True, "Could not parse critic response.", [], {}
+            passed, critique, low_confidence, scores = False, "Could not parse critic response.", [], {}
         duration_ms = round((time.perf_counter() - t0) * 1000)
         logger.info(
             "critic.complete",
@@ -128,6 +130,7 @@ def make_critic_node(llm: BaseChatModel) -> Callable:
             "passed": passed,
             "reflection_attempts": attempt,
             "low_confidence": low_confidence,
+            "critic_failed": parsed is None,
         }
 
     return critic_node
@@ -163,7 +166,7 @@ def make_refiner_node(llm: BaseChatModel) -> Callable:
 
 def should_refine(state: ReflectionState) -> Literal["refiner", "__end__"]:
     ceiling_hit = state["reflection_attempts"] >= settings.max_reflection_attempts
-    return "__end__" if state["passed"] or ceiling_hit else "refiner"
+    return "__end__" if state["passed"] or ceiling_hit or state.get("critic_failed") else "refiner"
 
 
 def build_reflection_subgraph(llm: BaseChatModel) -> CompiledStateGraph:

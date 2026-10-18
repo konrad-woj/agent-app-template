@@ -1,5 +1,7 @@
-Question:
+<question>
 {question}
+</question>
 
-Draft answer:
+<draft>
 {draft}
+</draft>
