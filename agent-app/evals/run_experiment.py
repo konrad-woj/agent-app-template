@@ -41,8 +41,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import datetime
-import json
 import sys
 import uuid
 from pathlib import Path
@@ -57,6 +55,7 @@ from logger import configure_logging, get_logger
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
+from evals._results import run_stamp, write_run
 from evals.evaluators import (
     expected_terms_evaluator,
     make_quality_score_evaluator,
@@ -71,7 +70,6 @@ logger = get_logger(__name__)
 _EVALS_DIR = Path(__file__).parent
 _DATASETS_DIR = _EVALS_DIR / "datasets"
 _CONFIGS_DIR = _EVALS_DIR / "configs"
-_RUNS_DIR = _EVALS_DIR / ".runs"
 _MAX_TURNS = 10  # safety cap; sample.yaml items are single-turn (one question + one approval)
 
 
@@ -442,9 +440,7 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
     if langfuse is not None:
         langfuse.flush()
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    results_dir = _RUNS_DIR / Path(cfg_file).stem
-    results_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = run_stamp()
 
     run_data = {
         "experiment_file": cfg_file,
@@ -454,8 +450,8 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
         "langfuse_uploaded": langfuse is not None,
         "variants": variant_results,
     }
-    json_path = results_dir / f"{timestamp}.json"
-    json_path.write_text(json.dumps(run_data, indent=2, default=str))
+    json_path = write_run(Path(cfg_file).stem, run_data, timestamp)
+    results_dir = json_path.parent
 
     log_lines = [
         f"experiment_file: {cfg_file}",

@@ -38,7 +38,6 @@ select zero cases (fail closed — an empty run is not a clean pass).
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import sys
 from collections.abc import Callable
@@ -53,11 +52,11 @@ from pydantic import BaseModel, ConfigDict
 
 from app.config import settings
 from app.prompts.loader import load_system
+from evals._results import write_run
 from evals.smoke_test import INPUT_VALIDATION_CASES, chat, post, run_to_interrupt, thread_id
 
 _EVALS_DIR = Path(__file__).parent
 _DEFAULT_CONFIG = _EVALS_DIR / "configs" / "guardrail_redteam.yaml"
-_RUNS_DIR = _EVALS_DIR / ".runs" / "guardrail_redteam"
 
 # Cheapest message that still goes through the guard pipeline: blocked by the
 # layer-1 sanitiser, so no GLiGuard or LLM call. Used by the MISSING_GUARDS probes.
@@ -543,14 +542,9 @@ def run(cfg: RedteamConfig, client: httpx.Client | None = None, save: bool = Tru
 
     counts = _report(results)
     if save:
-        _RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-        out = _RUNS_DIR / f"{timestamp}.json"
-        out.write_text(
-            json.dumps(
-                {"config": cfg.model_dump(mode="json"), "counts": counts, "results": [asdict(r) for r in results]},
-                indent=2,
-            )
+        out = write_run(
+            "guardrail_redteam",
+            {"config": cfg.model_dump(mode="json"), "counts": counts, "results": [asdict(r) for r in results]},
         )
         print(f"  Results written to {out}")
     return 1 if counts[Verdict.FAIL] or counts[Verdict.ERROR] else 0

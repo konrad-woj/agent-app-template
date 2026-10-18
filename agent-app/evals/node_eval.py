@@ -20,8 +20,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import datetime
-import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -32,11 +30,11 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm
+from evals._results import write_run
 from evals.node_tasks import NODE_TASK_REGISTRY
 
 _EVALS_DIR = Path(__file__).parent
 _DATASETS_DIR = _EVALS_DIR / "datasets"
-_RUNS_DIR = _EVALS_DIR / ".runs" / "node_eval"
 
 
 class NodeSpec(BaseModel):
@@ -188,11 +186,8 @@ async def run_async(cfg: NodeEvalConfig, llm: BaseChatModel | None = None, save:
     counts = {v: sum(1 for r in results if r.verdict == v) for v in ("PASS", "FAIL", "ERROR")}
     print(f"\n{'═' * 60}\n  " + "  ".join(f"{k}={n}" for k, n in counts.items()) + f"\n{'═' * 60}")
     if save:
-        _RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-        out = _RUNS_DIR / f"{timestamp}.json"
         payload = {"config": cfg.model_dump(), "counts": counts, "results": [asdict(r) for r in results]}
-        out.write_text(json.dumps(payload, indent=2, default=str))
+        out = write_run("node_eval", payload)
         print(f"  Results written to {out}")
     return 1 if counts["FAIL"] or counts["ERROR"] else 0
 
