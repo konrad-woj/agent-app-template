@@ -38,8 +38,9 @@ from app.graph.nodes._llm_invoke import llm_invoke_with_retry, parse_structured
 from app.graph.nodes.subgraphs._rubric_models import (
     CriterionVerdict,
     HolisticCriterionVerdict,
+    RubricScore,
+    apply_pass_policy,
     criterion_verdicts,
-    low_confidence_criteria,
     max_score_of,
 )
 from app.prompts.loader import load_system, render_human
@@ -76,17 +77,18 @@ _MIN_SCORES = {"relevance": 3, "completeness": 3, "accuracy": 1, "clarity": 1}
 _MIN_TOTAL = 9
 
 
-def _apply_pass_policy(verdict: CriticVerdict) -> tuple[bool, str]:
-    """Return (passed, critique). The critique lists each criterion below its minimum."""
-    scores = criterion_verdicts(verdict)
-    total = sum(v.score for v in scores.values())
-    below = {name: v for name, v in scores.items() if v.score < _MIN_SCORES[name]}
-    passed = not below and total >= _MIN_TOTAL
+def _apply_pass_policy(verdict: CriticVerdict) -> tuple[RubricScore, str]:
+    """Return (score, critique). The critique lists each criterion below its minimum."""
+    result = apply_pass_policy(verdict, _MIN_SCORES, _MIN_TOTAL)
     critique = verdict.critique
-    if below:
-        details = "\n".join(f"- {name} ({v.score}/{max_score_of(type(v))}): {v.reason}" for name, v in below.items())
+    if result.below_minimum:
+        verdicts = criterion_verdicts(verdict)
+        details = "\n".join(
+            f"- {name} ({verdicts[name].score}/{max_score_of(type(verdicts[name]))}): {verdicts[name].reason}"
+            for name in result.below_minimum
+        )
         critique = f"{critique}\n{details}"
-    return passed, critique
+    return result, critique
 
 
 def make_critic_node(llm: BaseChatModel) -> Callable:
@@ -106,8 +108,8 @@ def make_critic_node(llm: BaseChatModel) -> Callable:
         raw = str(response.content)
         parsed = parse_structured(raw, CriticVerdict)
         if parsed is not None:
-            passed, critique = _apply_pass_policy(parsed)
-            low_confidence = low_confidence_criteria(parsed)
+            result, critique = _apply_pass_policy(parsed)
+            passed, low_confidence = result.passed, result.low_confidence
             scores = {name: v.score for name, v in criterion_verdicts(parsed).items()}
         else:
             # Parse failure → fail closed: the draft is not marked as passed (a question

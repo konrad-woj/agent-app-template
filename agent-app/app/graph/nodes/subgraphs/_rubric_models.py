@@ -18,6 +18,8 @@ models validate LLM output, and a judge adding a stray key should not turn a
 usable verdict into a parse failure.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel
@@ -61,3 +63,32 @@ def max_score_of(verdict_type: type[AnyCriterionVerdict]) -> int:
 def low_confidence_criteria(verdict: BaseModel) -> list[str]:
     """Criterion ids the judge itself flagged as uncertain, in declaration order."""
     return [name for name, v in criterion_verdicts(verdict).items() if v.confidence == "low"]
+
+
+@dataclass(frozen=True)
+class RubricScore:
+    """Outcome of applying a pass policy to a verdict — computed in code, never by the judge."""
+
+    total: int
+    max_total: int
+    passed: bool
+    below_minimum: list[str]  # criterion ids under their minimum, in declaration order
+    low_confidence: list[str]  # criterion ids the judge flagged — needs a human read
+
+
+def apply_pass_policy(verdict: BaseModel, minimums: Mapping[str, int], minimum_total: int) -> RubricScore:
+    """Pass when every criterion meets its minimum (absent → 0) and the total meets `minimum_total`.
+
+    The one pass/fail rule shared by the reflection critic and the eval judge
+    (evals/evaluators.py), so the two can't drift apart.
+    """
+    verdicts = criterion_verdicts(verdict)
+    total = sum(v.score for v in verdicts.values())
+    below = [name for name, v in verdicts.items() if v.score < minimums.get(name, 0)]
+    return RubricScore(
+        total=total,
+        max_total=sum(max_score_of(type(v)) for v in verdicts.values()),
+        passed=not below and total >= minimum_total,
+        below_minimum=below,
+        low_confidence=low_confidence_criteria(verdict),
+    )

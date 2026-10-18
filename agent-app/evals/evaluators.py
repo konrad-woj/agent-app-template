@@ -20,7 +20,6 @@ into `create_score()` when Langfuse is configured (see run_experiment.py):
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import SystemMessage
@@ -30,7 +29,7 @@ from logger import get_logger
 
 from app.exceptions import LLMError
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm, llm_invoke_with_retry, parse_structured
-from app.graph.nodes.subgraphs._rubric_models import criterion_verdicts, low_confidence_criteria, max_score_of
+from app.graph.nodes.subgraphs._rubric_models import RubricScore, apply_pass_policy, criterion_verdicts, max_score_of
 from evals.models import ExpectedOutput, QualityVerdict
 from evals.trace_assertions import evaluate_trace_assertions
 
@@ -155,27 +154,10 @@ def check_rubric_matches_verdict(criteria: list[dict]) -> None:
         )
 
 
-@dataclass(frozen=True)
-class RubricScore:
-    total: int
-    max_total: int
-    passed: bool
-    below_minimum: list[str]  # criterion ids under their per_criterion_minimum
-    low_confidence: list[str]  # criterion ids the judge flagged — needs a human read
-
-
 def score_verdict(verdict: QualityVerdict, criteria: list[dict], minimum_total: int) -> RubricScore:
     """Apply the rubric's pass_policy to a verdict. Pure — no LLM call."""
-    scores = {name: v.score for name, v in criterion_verdicts(verdict).items()}
-    total = sum(scores.values())
-    below = [c["id"] for c in criteria if scores[c["id"]] < c.get("per_criterion_minimum", 0)]
-    return RubricScore(
-        total=total,
-        max_total=sum(c["max_score"] for c in criteria),
-        passed=not below and total >= minimum_total,
-        below_minimum=below,
-        low_confidence=low_confidence_criteria(verdict),
-    )
+    minimums = {c["id"]: c.get("per_criterion_minimum", 0) for c in criteria}
+    return apply_pass_policy(verdict, minimums, minimum_total)
 
 
 def _build_reference_block(expected: ExpectedOutput | None) -> str:
