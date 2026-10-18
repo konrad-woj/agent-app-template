@@ -65,6 +65,42 @@ class TestDispatch:
         assert "no config named 'nope'" in capsys.readouterr().err
 
 
+class TestBadConfigs:
+    def test_broken_yaml_in_configs_dir_does_not_break_listing(self, tmp_path: Path) -> None:
+        (tmp_path / "good.yaml").write_text("type: node_eval\n")
+        (tmp_path / "scratch.yaml").write_text("type: [unclosed\n")
+        with patch.object(run, "CONFIGS_DIR", tmp_path):
+            assert run.available_configs() == {"good": "node_eval"}
+
+    def test_invalid_yaml_config_exits_2(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("type: [unclosed\n")
+        with patch("sys.argv", ["run.py", str(bad)]), pytest.raises(SystemExit) as exc:
+            run.main()
+        assert exc.value.code == 2
+        assert "cannot read config" in capsys.readouterr().err
+
+    def test_config_failing_runner_validation_exits_2(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("type: node_eval\nnodes:\n  - node: critic\n    dataset: node/x.yaml\n")
+        with patch("sys.argv", ["run.py", str(bad)]), pytest.raises(SystemExit) as exc:
+            run.main()
+        assert exc.value.code == 2
+        assert "unknown node" in capsys.readouterr().err
+
+    def test_bare_name_prefers_configs_dir_over_a_local_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "node_eval").write_text("not a config")
+        monkeypatch.chdir(tmp_path)
+        assert run.resolve("node_eval") == (run.CONFIGS_DIR / "node_eval.yaml", "node_eval")
+
+    def test_local_path_still_resolves(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "mine.yaml").write_text("type: node_eval\n")
+        monkeypatch.chdir(tmp_path)
+        assert run.resolve("mine.yaml") == (Path("mine.yaml"), "node_eval")
+
+
 class TestNodeEvalConfig:
     def test_shipped_config_covers_every_node_task(self) -> None:
         cfg = node_eval.load_config(run.CONFIGS_DIR / "node_eval.yaml")

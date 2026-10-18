@@ -477,10 +477,14 @@ async def run_experiment(cfg: ExperimentConfig, cfg_file: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def load_config(path: Path) -> ExperimentConfig:
+    return ExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
+
+
 def run_from_config(path: Path) -> int:
     """evals/run.py entry point: load, validate, run, return the exit code."""
     configure_logging()
-    cfg = ExperimentConfig.model_validate(yaml.safe_load(path.read_text()))
+    cfg = load_config(path)
     return asyncio.run(run_experiment(cfg, str(path)))
 
 

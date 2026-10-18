@@ -9,8 +9,9 @@ picks the runner:
     guardrail_redteam  evals/guardrail_redteam.py categorized guard attack suite
     node_eval          evals/node_eval.py         per-node quality checks vs a real LLM
 
-Every runner exposes `run_from_config(path) -> int` and is imported only when
-selected, so a config for one runner never needs the others' dependencies.
+Every runner exposes `load_config(path)` and `run_from_config(path) -> int` and
+is imported only when selected, so a config for one runner never needs the
+others' dependencies. The config is validated before the run starts.
 The exit code is the runner's (0 clean, 1 failures or an empty selection);
 2 means the config itself couldn't be resolved.
 
@@ -27,6 +28,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 CONFIGS_DIR = Path(__file__).parent / "configs"
 
@@ -43,15 +45,30 @@ class ConfigError(Exception):
 
 
 def _read_type(path: Path) -> str | None:
-    data = yaml.safe_load(path.read_text())
+    """Return the config's `type`, or None if it has none.
+
+    Raises:
+        ConfigError: the file can't be read or isn't valid YAML.
+    """
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ConfigError(f"{path}: cannot read config: {exc}") from exc
     return data.get("type") if isinstance(data, dict) else None
 
 
 def available_configs() -> dict[str, str]:
-    """{name: type} for every config in evals/configs/ that a runner can take."""
+    """{name: type} for every config in evals/configs/ that a runner can take.
+
+    Unreadable files are skipped: one broken scratch file must not break the
+    help text or the listing in every other error message.
+    """
     found = {}
     for path in sorted(CONFIGS_DIR.glob("*.yaml")):
-        config_type = _read_type(path)
+        try:
+            config_type = _read_type(path)
+        except ConfigError:
+            continue
         if config_type in RUNNERS:
             found[path.stem] = config_type
     return found
@@ -64,13 +81,18 @@ def _available_text() -> str:
 def resolve(arg: str) -> tuple[Path, str]:
     """Return (config path, runner type) for a bare name or a path.
 
+    A bare name (no directory part) is looked up in evals/configs/ first, so a
+    stray file of the same name in the working directory can't shadow it.
+
     Raises:
-        ConfigError: unknown name, missing file, or a missing/unknown `type`.
+        ConfigError: unknown name, missing or unreadable file, or a missing/unknown `type`.
     """
-    path = Path(arg)
-    if not path.is_file():
-        path = CONFIGS_DIR / f"{arg.removesuffix('.yaml')}.yaml"
-    if not path.is_file():
+    named = CONFIGS_DIR / f"{arg.removesuffix('.yaml')}.yaml"
+    if Path(arg).parent == Path(".") and named.is_file():
+        path = named
+    elif Path(arg).is_file():
+        path = Path(arg)
+    else:
         raise ConfigError(f"no config named {arg!r}. Available: {_available_text()}")
     config_type = _read_type(path)
     if config_type not in RUNNERS:
@@ -81,8 +103,17 @@ def resolve(arg: str) -> tuple[Path, str]:
 
 
 def dispatch(arg: str) -> int:
+    """Resolve, validate and run a config; return the runner's exit code.
+
+    Raises:
+        ConfigError: the config can't be resolved or fails its runner's validation.
+    """
     path, config_type = resolve(arg)
     runner = importlib.import_module(RUNNERS[config_type])
+    try:
+        runner.load_config(path)
+    except ValidationError as exc:
+        raise ConfigError(f"{path}: invalid {config_type} config:\n{exc}") from exc
     return runner.run_from_config(path)
 
 
