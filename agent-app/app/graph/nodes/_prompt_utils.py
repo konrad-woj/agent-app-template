@@ -46,6 +46,11 @@ _ANGLE_LOOKALIKES = str.maketrans(
     }
 )
 
+# Unicode "tag" block: invisible to a reader but readable by a model, so it can carry
+# a whole hidden instruction with no marker for the regexes to find. Always stripped.
+# Its one legitimate use (subdivision flags like England's) degrades to a plain black flag.
+_TAG_CHARS = re.compile("[\U000e0000-\U000e007f]")
+
 
 def _canonical(text: str) -> str:
     """Fold text to what a reader (or model) sees: NFKC, angle lookalikes → ASCII, no invisible chars.
@@ -67,8 +72,8 @@ def sanitize_user_text(text: str) -> str:
         text: Raw user message or resume message.
 
     Returns:
-        Cleaned text with null bytes, XML injection tags, repeated tool-call
-        syntax, and excessive newlines removed.
+        Cleaned text with null bytes, invisible Unicode tag characters, XML
+        injection tags, repeated tool-call syntax, and excessive newlines removed.
 
     Raises:
         ValueError: If the text is empty after cleaning or exceeds the
@@ -81,7 +86,7 @@ def sanitize_user_text(text: str) -> str:
     if len(text) > _MAX_LENGTH:
         raise ValueError(f"Input exceeds maximum length of {_MAX_LENGTH} characters.")
 
-    cleaned = text.replace("\x00", "")
+    cleaned = _TAG_CHARS.sub("", text.replace("\x00", ""))
     # Match markers on the canonical form so fullwidth (＜system＞) or zero-width-split
     # (<sys\u200btem>) variants can't slip past the ASCII regexes. Switch to the
     # canonical text only when it contains a marker, so benign input (x², ﬁ, emoji
