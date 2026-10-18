@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 import yaml
 from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.graph.nodes import input_guard, planner
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm
@@ -58,8 +58,16 @@ class NodeEvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["node_eval"] = "node_eval"
-    nodes: list[NodeSpec]
+    nodes: list[NodeSpec]  # a node may appear more than once, e.g. with a second dataset
     deployment: str | None = None  # LiteLLM model id; None → AGENT_LLM_MODEL
+
+    @model_validator(mode="after")
+    def datasets_load(self) -> NodeEvalConfig:
+        # Load every dataset now so a malformed one is a config error (evals/run.py exits 2)
+        # before any LLM call, not a crash halfway through the run.
+        for spec in self.nodes:
+            load_node_dataset(spec.dataset)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +99,8 @@ def _min_claims(out: dict[str, Any], n: int) -> str | None:
 
 def _has_verdict(out: dict[str, Any], want: bool) -> str | None:
     got = all(out.get(k) is not None for k in ("supported", "confidence", "reason"))
-    return None if got is want else f"has_verdict={got}, expected {want}: {out}"
+    missing = [k for k in ("supported", "confidence", "reason") if out.get(k) is None]
+    return None if got is want else f"has_verdict={got}, expected {want} (missing: {missing or 'none'})"
 
 
 def _expected_status(out: dict[str, Any], want: str) -> str | None:
@@ -124,13 +133,31 @@ def load_config(path: Path) -> NodeEvalConfig:
 
 
 def load_node_dataset(dataset: str) -> list[dict]:
-    """Load one node dataset, failing fast on a missing key or an unknown expectation."""
+    """Load one node dataset, failing fast on a malformed item or an unknown expectation.
+
+    Every returned item has a string `id` (`#<index>` when the dataset gives none),
+    so results can tell items apart.
+
+    Raises:
+        ValueError: the file is missing or unreadable, or an item is malformed.
+    """
     path = _DATASETS_DIR / dataset
-    items: list[dict] = (yaml.safe_load(path.read_text()) or {}).get("items") or []
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"{dataset}: cannot read dataset: {exc}") from exc
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError(f"{dataset}: expected a mapping with an 'items' list")
     for i, item in enumerate(items):
-        label = item.get("id", f"index {i}")
+        if not isinstance(item, dict):
+            raise ValueError(f"{dataset}: item #{i} must be a mapping, got {type(item).__name__}")
+        item["id"] = str(item.get("id", f"#{i}"))
+        label = item["id"]
         if "input" not in item or "expected_output" not in item:
             raise ValueError(f"{dataset}: item {label} needs both 'input' and 'expected_output'")
+        if not isinstance(item["expected_output"], dict):
+            raise ValueError(f"{dataset}: item {label} expected_output must be a mapping")
         unknown = set(item["expected_output"]) - CHECKS.keys()
         if unknown:
             raise ValueError(f"{dataset}: item {label} has unknown expected_output keys {sorted(unknown)}")
@@ -162,7 +189,7 @@ class ItemResult:
 
 
 async def _run_item(node: str, task: Callable, item: dict) -> ItemResult:
-    item_id = item.get("id", "?")
+    item_id = item["id"]
     try:
         output = await task(item=item)
     except Exception as exc:  # one broken item must not hide the rest of the run
@@ -184,16 +211,16 @@ async def run_async(cfg: NodeEvalConfig, llm: BaseChatModel | None = None, save:
 
     `llm` lets tests inject a mock; by default it's built from `deployment`.
     """
-    datasets = {spec.node: load_node_dataset(spec.dataset) for spec in cfg.nodes}
-    total = sum(len(items) for items in datasets.values())
+    datasets = [(spec.node, load_node_dataset(spec.dataset)) for spec in cfg.nodes]
+    total = sum(len(items) for _, items in datasets)
     if total == 0:
         print(f"No items selected (nodes={[s.node for s in cfg.nodes]}) — failing closed.")
         return 1
 
     llm = llm or build_llm(NodeLLMConfig(model=cfg.deployment))
-    print(f"\nNode eval — {len(datasets)} nodes, {total} items\n")
+    print(f"\nNode eval — {len(datasets)} datasets, {total} items\n")
     results: list[ItemResult] = []
-    for node, items in datasets.items():
+    for node, items in datasets:
         task = NODE_TASK_REGISTRY[node](llm)
         for item in items:
             r = await _run_item(node, task, item)

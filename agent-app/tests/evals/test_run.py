@@ -121,6 +121,34 @@ class TestNodeEvalConfig:
         with patch.object(node_eval, "_DATASETS_DIR", tmp_path), pytest.raises(ValueError, match="min_plan_step"):
             load_node_dataset("bad.yaml")
 
+    @pytest.mark.parametrize(
+        ("body", "match"),
+        [
+            ("items:\n  - just a string\n", "must be a mapping"),
+            ("items:\n  - id: x\n    input: {}\n    expected_output:\n", "expected_output must be a mapping"),
+            ("items: {not: a list}\n", "'items' list"),
+            ("items: [unclosed\n", "cannot read dataset"),
+        ],
+    )
+    def test_malformed_dataset_raises_a_clear_error(self, tmp_path: Path, body: str, match: str) -> None:
+        (tmp_path / "bad.yaml").write_text(body)
+        with patch.object(node_eval, "_DATASETS_DIR", tmp_path), pytest.raises(ValueError, match=match):
+            load_node_dataset("bad.yaml")
+
+    def test_items_without_id_get_distinct_labels(self, tmp_path: Path) -> None:
+        item = "  - input: {}\n    expected_output: {}\n"
+        (tmp_path / "d.yaml").write_text("items:\n" + item * 2)
+        with patch.object(node_eval, "_DATASETS_DIR", tmp_path):
+            assert [i["id"] for i in load_node_dataset("d.yaml")] == ["#0", "#1"]
+
+    def test_bad_dataset_is_a_config_error(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text("type: node_eval\nnodes:\n  - node: writer\n    dataset: node/missing.yaml\n")
+        with patch("sys.argv", ["run.py", str(cfg)]), pytest.raises(SystemExit) as exc:
+            run.main()
+        assert exc.value.code == 2
+        assert "cannot read dataset" in capsys.readouterr().err
+
 
 class TestCheckItem:
     def test_all_expectations_met(self) -> None:
@@ -177,6 +205,12 @@ class TestRunAsync:
         out = capsys.readouterr().out
         assert "[PASS ]" not in out
         assert "unparseable" in out
+
+    async def test_same_node_listed_twice_runs_both_datasets(self, capsys: pytest.CaptureFixture[str]) -> None:
+        spec = NodeSpec(node="output_guard", dataset="node/output_guard.yaml")
+        once = len(load_node_dataset(spec.dataset))
+        assert await run_async(NodeEvalConfig(nodes=[spec, spec]), llm=_mock_llm("unused"), save=False) == 0
+        assert capsys.readouterr().out.count("[PASS ] output_guard/") == 2 * once
 
     async def test_empty_selection_fails_closed(self) -> None:
         assert await run_async(NodeEvalConfig(nodes=[]), llm=_mock_llm(""), save=False) == 1
