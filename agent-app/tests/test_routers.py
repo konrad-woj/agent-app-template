@@ -204,6 +204,29 @@ class TestChatFreshTurn:
         assert data["final_answer"] == "Research result."
         assert data["is_interrupted"] is False
 
+    async def test_reports_low_confidence_criteria(self, client: AsyncClient, mock_graph: MagicMock) -> None:
+        mock_graph.aget_state = AsyncMock(return_value=_snapshot())
+        mock_graph.ainvoke = AsyncMock(
+            return_value={"status": "done", "final_answer": "A", "reflection_low_confidence": ["accuracy"]}
+        )
+
+        response = await client.post("/v1/chat", json={"thread_id": "t-lc", "message": "Research AI"})
+
+        assert response.json()["low_confidence_criteria"] == ["accuracy"]
+
+    async def test_blocked_turn_does_not_report_previous_turns_flags(
+        self, client: AsyncClient, mock_graph: MagicMock
+    ) -> None:
+        # reflection_low_confidence persists in the thread's state from an earlier answer.
+        mock_graph.aget_state = AsyncMock(return_value=_snapshot())
+        mock_graph.ainvoke = AsyncMock(
+            return_value={"status": "blocked", "guard_reason": "off-topic", "reflection_low_confidence": ["accuracy"]}
+        )
+
+        response = await client.post("/v1/chat", json={"thread_id": "t-lc2", "message": "Book a flight"})
+
+        assert response.json()["low_confidence_criteria"] == []
+
     async def test_thread_id_passed_in_config(self, client: AsyncClient, mock_graph: MagicMock) -> None:
         mock_graph.aget_state = AsyncMock(return_value=_snapshot())
         mock_graph.ainvoke = AsyncMock(return_value={"status": "done"})
@@ -608,7 +631,9 @@ class TestChatStream:
         mock_graph.aget_state = AsyncMock(
             side_effect=[
                 _snapshot(),  # pre-invoke check
-                _snapshot(values={"status": "done", "final_answer": "Result"}),  # post-stream check
+                _snapshot(
+                    values={"status": "done", "final_answer": "Result", "reflection_low_confidence": ["clarity"]}
+                ),  # post-stream check
             ]
         )
         events = [
@@ -628,6 +653,7 @@ class TestChatStream:
         assert token_frames[2]["data"]["token"] == " is here"
         done_frames = [f for f in frames if f["event"] == "done"]
         assert len(done_frames) == 1
+        assert done_frames[0]["data"]["low_confidence_criteria"] == ["clarity"]
 
     async def test_stream_interrupt_frame(self, client: AsyncClient, mock_graph: MagicMock) -> None:
         mock_graph.aget_state = AsyncMock(

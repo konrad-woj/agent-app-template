@@ -176,6 +176,17 @@ def _public_dead_letter(dead_letter: dict | None) -> dict | None:
     return {"failed_node": dead_letter.get("failed_node"), "timestamp": dead_letter.get("timestamp")}
 
 
+def _low_confidence_criteria(state: dict) -> list[str]:
+    """Criteria the reflection critic flagged as uncertain, for a turn that reached reflection.
+
+    State carries over between turns of a thread, so a turn that ended earlier
+    (blocked, dead-lettered, interrupted) must not report the previous answer's flags.
+    """
+    if state.get("status") not in ("done", "reflecting"):
+        return []
+    return list(state.get("reflection_low_confidence") or [])
+
+
 @router.post("/v1/chat", response_model=ChatResponse, tags=["chat"])
 @limiter.limit(settings.rate_limit or _DEFAULT_RATE_LIMIT)
 async def chat(
@@ -240,6 +251,7 @@ async def chat(
         is_interrupted=now_interrupted,
         interrupt_value=_extract_interrupt_value(post_snapshot) if now_interrupted else None,
         final_answer=result.get("final_answer"),
+        low_confidence_criteria=_low_confidence_criteria(result),
         guard_reason=result.get("guard_reason"),
         dead_letter=_public_dead_letter(result.get("dead_letter")),
     )
@@ -311,7 +323,12 @@ async def _generate(
             dead_letter = _public_dead_letter(state.get("dead_letter"))
             yield f"event: error\ndata: {json.dumps({'status': status, 'dead_letter': dead_letter})}\n\n"
         else:
-            yield f"event: done\ndata: {json.dumps({'status': status, 'final_answer': state.get('final_answer')})}\n\n"
+            done = {
+                "status": status,
+                "final_answer": state.get("final_answer"),
+                "low_confidence_criteria": _low_confidence_criteria(state),
+            }
+            yield f"event: done\ndata: {json.dumps(done)}\n\n"
 
 
 @router.post("/v1/chat/stream", tags=["chat"])
@@ -437,6 +454,7 @@ async def replay(
         thread_id=thread_id,
         status=result.get("status", "done"),
         final_answer=result.get("final_answer"),
+        low_confidence_criteria=_low_confidence_criteria(result),
         guard_reason=result.get("guard_reason"),
         dead_letter=_public_dead_letter(result.get("dead_letter")),
     )

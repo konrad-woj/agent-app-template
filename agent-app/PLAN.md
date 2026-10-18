@@ -913,7 +913,10 @@ general research questions, so 5b was split instead:
   The critic now receives the question, not just the draft. Pass/fail is computed in code
   (every criterion at its minimum and total ≥ 9/12). Criteria below their minimum are
   appended to the critique for the refiner. Low-confidence criteria propagate to
-  `AgentState.reflection_low_confidence`.
+  `AgentState.reflection_low_confidence` and out to API clients as
+  `ChatResponse.low_confidence_criteria` (and the stream's `done` event). The pass rule
+  lives in `_rubric_models.apply_pass_policy`, shared with the eval judge. An unparseable
+  critic response fails closed: not passed, and the loop stops without refining.
 - **Structured-output mechanism**: parse-and-validate against the Pydantic model, not
   `.with_structured_output()` — the default local backends (llama.cpp / Unsloth Studio via LiteLLM)
   don't reliably support tool-calling-based structured output. `parse_structured` now strips

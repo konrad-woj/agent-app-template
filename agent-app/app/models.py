@@ -23,6 +23,8 @@ class ChatResponse(BaseModel):
     is_interrupted: bool = False
     interrupt_value: dict | None = None
     final_answer: str | None = None
+    # Reflection criteria the critic was unsure about — the answer needs a human read on these.
+    low_confidence_criteria: list[str] = []
     guard_reason: str | None = None
     dead_letter: dict | None = None
 
