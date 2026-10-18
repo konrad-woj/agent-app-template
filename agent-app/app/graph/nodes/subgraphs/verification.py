@@ -40,6 +40,9 @@ logger = get_logger(__name__)
 
 _VERIFY_PROMPT = load_system("verification", "verify")
 
+# reason for an unparseable verifier response; evals/node_eval.py reports it as ERROR.
+PARSE_FAILED_REASON = "Could not parse verification response."
+
 
 class VerificationState(TypedDict):
     claims: list[str]  # fan-out source: set of claims from writer
@@ -98,7 +101,7 @@ def make_verifier_node(llm: BaseChatModel, fact_check_tool: BaseTool | None) -> 
                 "claim": claim,
                 "supported": True,
                 "confidence": "low",
-                "reason": "Could not parse verification response.",
+                "reason": PARSE_FAILED_REASON,
             }
 
         logger.info("verifier.complete", supported=result["supported"], confidence=result["confidence"])

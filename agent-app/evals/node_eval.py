@@ -6,7 +6,8 @@ dataset per node (evals/datasets/node/*.yaml), and checks each item's
 mocked LLM; this is the prompt/quality regression run.
 
 Each item gets PASS, FAIL (an expectation not met), or ERROR (the task raised,
-or the node dead-lettered — usually the LLM is unreachable). Exits 1 on any
+the node dead-lettered — usually the LLM is unreachable — or the node couldn't
+parse the LLM's response and returned its fallback verdict). Exits 1 on any
 FAIL or ERROR, or if the config selects zero items.
 
 GLiGuard stays mocked permissively here (see evals/node_tasks.py): this tier
@@ -29,7 +30,9 @@ import yaml
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.graph.nodes import input_guard, planner
 from app.graph.nodes._llm_invoke import NodeLLMConfig, build_llm
+from app.graph.nodes.subgraphs import verification
 from evals._results import write_run
 from evals.node_tasks import NODE_TASK_REGISTRY
 
@@ -139,6 +142,16 @@ def load_node_dataset(dataset: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# Fallback reasons nodes return when they can't parse the LLM's response.
+_PARSE_FALLBACKS = frozenset(
+    {
+        input_guard.PARSE_FAILED_REASON,
+        planner.PLAN_GUARD_PARSE_FAILED_REASON,
+        verification.PARSE_FAILED_REASON,
+    }
+)
+
+
 @dataclass(frozen=True)
 class ItemResult:
     node: str
@@ -156,6 +169,10 @@ async def _run_item(node: str, task: Callable, item: dict) -> ItemResult:
         return ItemResult(node, item_id, "ERROR", f"{type(exc).__name__}: {exc}", {})
     if output.get("status") == "dead_lettered":
         return ItemResult(node, item_id, "ERROR", "node dead-lettered (LLM unreachable?)", output)
+    if output.get("guard_reason") in _PARSE_FALLBACKS or output.get("reason") in _PARSE_FALLBACKS:
+        # The node couldn't parse the LLM and returned its fallback verdict — which can look
+        # like a pass (blocked, supported). Says nothing about prompt quality; never a PASS.
+        return ItemResult(node, item_id, "ERROR", "LLM response unparseable — node used its fallback", output)
     failures = check_item(item["expected_output"], output)
     if failures:
         return ItemResult(node, item_id, "FAIL", "; ".join(failures), output)

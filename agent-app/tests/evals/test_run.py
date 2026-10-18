@@ -132,5 +132,15 @@ class TestRunAsync:
         assert await run_async(cfg, llm=llm, save=False) == 1
         assert "[ERROR] writer/" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("node", ["verifier", "input_guard", "planner"])
+    async def test_unparseable_llm_never_passes(self, node: str, capsys: pytest.CaptureFixture[str]) -> None:
+        # Garbage output makes these nodes fall back to verdicts that look valid (supported=True,
+        # status=blocked); those must report as ERROR, not satisfy has_verdict / expected_status.
+        cfg = NodeEvalConfig(nodes=[NodeSpec(node=node, dataset=f"node/{node}.yaml")])
+        assert await run_async(cfg, llm=_mock_llm("not json at all"), save=False) == 1
+        out = capsys.readouterr().out
+        assert "[PASS ]" not in out
+        assert "unparseable" in out
+
     async def test_empty_selection_fails_closed(self) -> None:
         assert await run_async(NodeEvalConfig(nodes=[]), llm=_mock_llm(""), save=False) == 1

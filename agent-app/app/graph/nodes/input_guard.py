@@ -40,6 +40,9 @@ logger = get_logger(__name__)
 
 _TOPIC_CHECK_PROMPT = load_system("input_guard", "topic_check")
 
+# guard_reason for an unparseable topic-check response; evals/node_eval.py reports it as ERROR.
+PARSE_FAILED_REASON = "Input guard could not parse LLM response — treating as off-topic."
+
 
 def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Callable:
     """Return an async input_guard node bound to the given LLM and GLiGuardClient."""
@@ -75,7 +78,7 @@ def make_input_guard_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Calla
             logger.warning("input_guard.layer3_parse_failed")
             return {
                 "status": "blocked",
-                "guard_reason": "Input guard could not parse LLM response — treating as off-topic.",
+                "guard_reason": PARSE_FAILED_REASON,
                 "messages": sanitized_messages,
             }
 

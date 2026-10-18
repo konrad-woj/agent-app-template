@@ -43,6 +43,9 @@ logger = get_logger(__name__)
 _PLAN_SYSTEM_PROMPT = load_system("planner", "plan")
 _PLAN_GUARD_PROMPT = load_system("planner", "plan_guard")
 
+# guard_reason for an unparseable plan-guard response; evals/node_eval.py reports it as ERROR.
+PLAN_GUARD_PARSE_FAILED_REASON = "Plan guard could not parse LLM response — treating as unsafe."
+
 
 def make_planner_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Callable:
     """Return an async planner node bound to the given LLM and GLiGuardClient."""
@@ -86,7 +89,7 @@ def make_planner_node(llm: BaseChatModel, gliguard: GLiGuardClient) -> Callable:
             return {
                 "plan": plan_steps,
                 "status": "blocked",
-                "guard_reason": "Plan guard could not parse LLM response — treating as unsafe.",
+                "guard_reason": PLAN_GUARD_PARSE_FAILED_REASON,
             }
 
         if verdict.verdict != "safe":
